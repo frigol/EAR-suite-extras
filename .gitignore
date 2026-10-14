@@ -1,68 +1,32 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# Build output
 build/
-Build/
-build-*/
+build_test/
+out/
 
-# CMake generated files
-CMakeFiles/
+# CMake
 CMakeCache.txt
+CMakeFiles/
 cmake_install.cmake
-Makefile
-install_manifest.txt
+CTestTestfile.cmake
 compile_commands.json
+CMakeUserPresets.json
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+# vcpkg (fetched by the toolchain file, not vendored)
+submodules/vcpkg/
+**/vcpkg_installed/
 
-# vcpkg
-vcpkg_installed/
+# Git submodule content (populated by `git submodule update --init --recursive`,
+# not vendored in this repo - see .gitmodules)
+submodules/*/
+!submodules/*.patch
+!submodules/CMakeLists.txt
 
-# debug information files
-*.dwo
+# Editor/IDE
+.vs/
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
 
-# test output & cache
-Testing/
-.cache/
+# macOS
+.DS_Store

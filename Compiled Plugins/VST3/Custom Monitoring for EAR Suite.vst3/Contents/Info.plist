@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist>
+  <dict>
+    <key>CFBundleExecutable</key>
+    <string>Custom Monitoring for EAR Suite</string>
+    <key>CFBundleIconFile</key>
+    <string></string>
+    <key>CFBundleIdentifier</key>
+    <string>io.lucafrigo.ear-custom-monitoring</string>
+    <key>CFBundleName</key>
+    <string>Custom Monitoring for EAR Suite</string>
+    <key>CFBundleDisplayName</key>
+    <string>Custom Monitoring for EAR Suite</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.2</string>
+    <key>CFBundleVersion</key>
+    <string>1.2.2</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>(C) 2019-2023 BBC, (C) 2020-2021 EBU, (C) 2019-2021 IRT. Modified portions (C) 2026 Luca Frigo.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+  </dict>
+</plist>

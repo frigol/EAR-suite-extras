@@ -1,0 +1,37 @@
+syntax = "proto2";
+
+package ear.plugin.proto;
+
+import "common_types.proto";
+
+message Speaker {
+  optional int32 id = 1 [default = 0];
+  repeated string labels = 2;
+  optional PolarPosition position = 3;
+  optional bool is_lfe = 4 [default = false];
+  optional float gain = 5 [default = 1.0];
+}
+
+message DirectSpeakersTypeMetadata {
+  optional int32 packFormatIdValue = 1 [default = 0];
+  repeated Speaker speakers = 2;
+}
+
+message MatrixTypeMetadata {}
+
+message ObjectsTypeMetadata {
+  optional double gain = 1 [default = 1.0];
+  optional PolarPosition position = 2;
+  optional double width = 3 [default = 0.0];
+  optional double height = 4 [default = 0.0];
+  optional double depth = 5 [default = 0.0];
+  optional double diffuse = 6 [default = 0.0];
+  optional double factor = 7 [default = 0.0];
+  optional double range = 8 [default = 0.0];
+}
+
+message HoaTypeMetadata {
+  optional int32 packFormatIdValue = 1 [default = 0];
+}
+
+message BinauralTypeMetadata {}

@@ -1,0 +1,41 @@
+[submodule "submodules/libadm"]
+	path = submodules/libadm
+	url = https://github.com/ebu/libadm.git
+[submodule "submodules/libbw64"]
+	path = submodules/libbw64
+	url = https://github.com/ebu/libbw64.git
+# Not required - BEAR will pull a version in
+# [submodule "submodules/libear"]
+# 	path = submodules/libear
+# 	url = https://github.com/ebu/libear.git
+[submodule "submodules/googletest"]
+	path = submodules/googletest
+	url = https://github.com/google/googletest.git
+[submodule "submodules/WDL"]
+	path = submodules/WDL
+	url = https://github.com/justinfrankel/WDL.git
+[submodule "submodules/VST3"]
+	path = submodules/VST3
+	url = https://github.com/steinbergmedia/vst3sdk
+	# This gets patched - ignore those changes
+	ignore = dirty
+[submodule "submodules/JUCE"]
+	path = submodules/JUCE
+	url = https://github.com/WeAreROLI/JUCE.git
+	# This gets patched - ignore those changes
+	ignore = dirty
+[submodule "submodules/readerwriterqueue"]
+	path = submodules/readerwriterqueue
+	url = https://github.com/cameron314/readerwriterqueue
+[submodule "submodules/vcpkg"]
+	path = submodules/vcpkg
+	url = https://github.com/microsoft/vcpkg.git
+[submodule "submodules/Catch2"]
+	path = submodules/Catch2
+	url = https://github.com/catchorg/Catch2.git
+[submodule "submodules/bear"]
+	path = submodules/bear
+	url = https://github.com/ebu/bear.git
+[submodule "submodules/adm_coordinate_conversion"]
+	path = submodules/adm_coordinate_conversion
+	url = https://github.com/ebu/adm_coordinate_conversion.git

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "ear-production-suite",
+  "version": "1.2.2",
+  "dependencies": [
+    "nlohmann-json",
+    "protobuf",
+    "nng",
+    "spdlog",
+    "yaml-cpp",
+    "boost-algorithm",
+    "boost-asio",
+    "boost-circular-buffer",
+    "boost-dll",
+    "boost-filesystem",
+    "boost-format",
+    "boost-functional",
+    "boost-graph",
+    "boost-iterator",
+    "boost-math",
+    "boost-mp11",
+    "boost-optional",
+    "boost-program-options",
+    "boost-property-tree",
+    "boost-range",
+    "boost-rational",
+    "boost-smart-ptr",
+    "boost-test",
+    "boost-timer",
+    "boost-uuid",
+    "boost-variant"
+  ]
+}

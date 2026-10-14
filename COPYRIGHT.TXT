@@ -1,0 +1,27 @@
+The content of this repository is based on the EBU ADM Renderer
+Production Suite (https://github.com/ebu/ear-production-suite):
+
+Copyright (C) 2019-2026 British Broadcasting Corporation (BBC)
+Copyright (C) 2020-2021 European Broadcasting Union (EBU)
+Copyright (C) 2019-2021 Institut für Rundfunktechnik GmbH (IRT)
+
+Modified portions (OSC remote control added to the Object plugin; the
+Custom Monitoring plugin; manufacturer/branding changes) are
+
+Copyright (C) 2026 Luca Frigo
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+This is an independent, unofficial fork. It is not affiliated with,
+endorsed by, or supported by the BBC, EBU, or IRT.
