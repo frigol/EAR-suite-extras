@@ -18,9 +18,9 @@
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.2</string>
+    <string>1.0.0</string>
     <key>CFBundleVersion</key>
-    <string>1.2.2</string>
+    <string>1.0.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>(C) 2019-2023 BBC, (C) 2020-2021 EBU, (C) 2019-2021 IRT. Modified portions (C) 2026 Luca Frigo.</string>
     <key>NSHighResolutionCapable</key>

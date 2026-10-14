@@ -4,6 +4,8 @@ Unofficial plugins extending the [EBU ADM Renderer Production Suite](https://git
 
 **This is an independent, unofficial fork. It is not affiliated with, endorsed by, or supported by the BBC, EBU, or IRT.** See [COPYRIGHT.TXT](COPYRIGHT.TXT) and [LICENSE.TXT](LICENSE.TXT).
 
+**Version 1.0.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
+
 ## What's here
 
 - **Object OSC for EAR Suite** — the EAR Object plugin with OSC remote control added: an external system (e.g. [ControlGRIS2](https://github.com/GRIS-UdeM/ControlGris)) can drive an object's position and extent live. Several instances can share one UDP port, each identified by its own source index.

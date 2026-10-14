@@ -4,9 +4,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(EPS_VERSION_BASE 1.2.2) # This is used as fallback if getting from git fails. Must be only numeric.
+set(EPS_VERSION_BASE 1.0.0) # This is used as fallback if getting from git fails. Must be only numeric.
 # NOTE: also update hard-coded version number in
 # - vcpkg.json
+# This is ear-suite-extras' own version, independent of upstream EAR
+# Production Suite's numbering (reset to 1.0.0 when this fork started,
+# rather than continuing upstream's 1.2.2 - this repo has its own
+# release history). Bump it here (and in vcpkg.json) when cutting a new
+# GitHub Release; it ends up in the built plugins' own version field
+# (visible in the DAW, e.g. via the plugin's info/about), and - if git
+# tags are used (vX.Y.Z) - get_git_version.cmake picks up the tag
+# automatically and this fallback is only used when no tag is reachable.
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake_modules")
 include(get_git_version)
