@@ -44,11 +44,21 @@ ObjectsAudioProcessor::ObjectsAudioProcessor()
   addParameter(range_ = new AudioParameterFloat("range", "Range", 0.f, 180.f, 45.f));
   addParameter(bypass_ = new AudioParameterBool("byps", "Bypass", false));
   addParameter(useTrackName_ = new AudioParameterBool("useTrackName", "Use Track Name", true));
-  addParameter(oscEnabled_ = new AudioParameterBool("oscEnabled", "OSC Enabled", false));
+  // inputInstanceId_ MUST stay the 17th parameter added (VST3 index 16):
+  // reaper-adm-extension reads the Object plugin's instance ID by raw VST3
+  // parameter INDEX, not by parameter ID string (see paramObjectInstanceId
+  // in exportaction_admsource-earvst.h, hardcoded to index 16, matching
+  // stock EAR Object's own 17th addParameter() call). Adding oscEnabled_
+  // here instead of after inputInstanceId_ silently shifted every later
+  // parameter's index by one - ADM export then read oscEnabled_'s value
+  // (almost always 0/false) as the instance ID instead, so every instance
+  // reported ID 0 and export failed with "Multiple Input plugins found
+  // with instance ID 0" as soon as more than one was in the project.
   addParameter(inputInstanceId_ = new ReadOnlyAudioParameterInt(
     "inputInstanceId",  // parameter ID
     "Auto-set ID to uniquely identify plugin",  // parameter name
     0, 65535, 0));  // range and default value
+  addParameter(oscEnabled_ = new AudioParameterBool("oscEnabled", "OSC Enabled", false));
 
   /* clang-format on */
 

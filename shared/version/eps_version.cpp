@@ -1,15 +1,15 @@
 #include "eps_version.h"
 
 std::string const& eps::baseVersion() {
-    static std::string baseVersion("1.0.0");
+    static std::string baseVersion("1.0.1");
     return baseVersion;
 }
 
 std::string const& eps::currentVersion() {
 #ifdef BAREBONESPROFILE
-    static std::string currentVersion("1.0.0-no-tags[bb]");
+    static std::string currentVersion("1.0.1-no-tags[bb]");
 #else
-    static std::string currentVersion("1.0.0-no-tags");
+    static std::string currentVersion("1.0.1-no-tags");
 #endif
     return currentVersion;
 }
@@ -23,7 +23,7 @@ int const eps::versionMinor() {
 }
 
 int const eps::versionRevision() {
-	return 0;
+	return 1;
 }
 
 bool const eps::versionInfoAvailable() {

@@ -4,7 +4,7 @@ Unofficial plugins extending the [EBU ADM Renderer Production Suite](https://git
 
 **This is an independent, unofficial fork. It is not affiliated with, endorsed by, or supported by the BBC, EBU, or IRT.** See [COPYRIGHT.TXT](COPYRIGHT.TXT) and [LICENSE.TXT](LICENSE.TXT).
 
-**Version 1.0.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
+**Version 1.0.1** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
 
 ## What's here
 
