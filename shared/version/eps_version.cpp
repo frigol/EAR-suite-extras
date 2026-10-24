@@ -7,9 +7,9 @@ std::string const& eps::baseVersion() {
 
 std::string const& eps::currentVersion() {
 #ifdef BAREBONESPROFILE
-    static std::string currentVersion("1.0.1-no-tags[bb]");
+    static std::string currentVersion("1.0.1-no-tags-55ed-dirty[bb]");
 #else
-    static std::string currentVersion("1.0.1-no-tags");
+    static std::string currentVersion("1.0.1-no-tags-55ed-dirty");
 #endif
     return currentVersion;
 }
