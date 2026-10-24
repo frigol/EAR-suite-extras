@@ -4,22 +4,37 @@ Unofficial plugins extending the [EBU ADM Renderer Production Suite](https://git
 
 **This is an independent, unofficial fork. It is not affiliated with, endorsed by, or supported by the BBC, EBU, or IRT.** See [COPYRIGHT.TXT](COPYRIGHT.TXT) and [LICENSE.TXT](LICENSE.TXT).
 
-**Version 1.0.1** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
+**Version 1.1.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
 
 ## What's here
 
 - **Object OSC for EAR Suite** — the EAR Object plugin with OSC remote control added: an external system (e.g. [ControlGRIS2](https://github.com/GRIS-UdeM/ControlGris)) can drive an object's position and extent live. Several instances can share one UDP port, each identified by its own source index.
 - **Custom Monitoring for EAR Suite** — the EAR Monitoring plugin, but the loudspeaker layout is loaded at runtime from a plain text file instead of chosen from a fixed list of standard layouts, so it can decode to any loudspeaker rig, including subwoofers at arbitrary positions.
+- **Reverb for EAR Suite** — a direction-weighted spatial reverb: reports 10 points (the same "4+6+0" hexagon+top-4 layout as BS.2051's own mid/top rings) to EAR Scene as independent Objects, each panned from the active source(s) feeding it, with early reflections plus a shared algorithmic diffuse tail (switchable between a custom FDN and an MVerb plate engine). Needs EAR Scene (from the official EAR Production Suite) already running in the session.
+- **IR Reverb for EAR Suite** — the same 10-point architecture as Reverb for EAR Suite, but the diffuse tail is a convolution against a loaded impulse response instead of an algorithmic engine. Accepts mono, stereo, AmbiX (any order), or a 9/10-channel discrete array IR (PCMA-3D-style layout); each of the 10 output points has a full Object-style parameter set (position, gain, width/height/depth, diffuse) and can be adjusted independently afterwards.
 
-Both are VST3 only (macOS Apple Silicon prebuilt; other platforms need a source build — see below).
+Both Reverb plugins also need **EAR Scene** running in the session to hear anything - they register their 10 points with it exactly like a normal EAR Object plugin, they don't output audio on their own track.
+
+All four are VST3 only (macOS Apple Silicon prebuilt; other platforms need a source build — see below).
 
 ## Installing the prebuilt plugins
 
+**macOS**: run the installer from the repo root:
+
+```bash
+./install.sh
+```
+
+This copies all four `.vst3` bundles into `~/Library/Audio/Plug-Ins/VST3/`, and - if it detects REAPER's official `reaper-adm-extension` already installed - patches it so Reverb/IR Reverb export correctly to ADM (see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md); it's safe to re-run, and it backs up the original file first).
+
+Or by hand, on any platform:
+
 1. Quit your DAW if it's running.
-2. Copy both folders from [`Compiled Plugins/VST3/`](Compiled%20Plugins/VST3/) into your VST3 plugins folder:
+2. Copy the folders you want from [`Compiled Plugins/VST3/`](Compiled%20Plugins/VST3/) into your VST3 plugins folder:
    - macOS: `~/Library/Audio/Plug-Ins/VST3/`
    - Windows: `C:\Program Files\Common Files\VST3\`
 3. Restart your DAW and rescan plugins if it doesn't pick them up automatically.
+4. If you use REAPER's ADM export with Reverb or IR Reverb, also apply the patch described in [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md) - without it, export silently drops these two plugins' points.
 
 The prebuilt `.vst3` bundles in this repo are macOS (Apple Silicon, arm64) only. For Windows, Linux, or an Intel Mac, build from source (below).
 
@@ -104,15 +119,15 @@ Requires a C++20 compiler, CMake ≥ 3.14, and (on macOS) Xcode command line too
 git clone --recursive https://github.com/frigol/ear-suite-extras.git
 cd ear-suite-extras
 cmake --preset macos-default-arm64   # or macos-default (x64), see CMakePresets.json
-cmake --build build/macos-default-arm64 --target ear_custom_monitoring_VST3 object_osc_VST3
+cmake --build build/macos-default-arm64 --target ear_custom_monitoring_VST3 object_osc_VST3 reverb_VST3 ir_reverb_VST3
 ```
 
 Built plugins land in `build/<preset>/ear-production-suite-plugins/VST3/`. Copy them to your VST3 folder as above.
 
 If you cloned without `--recursive`, run `git submodule update --init --recursive` afterwards.
 
-This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these two plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite).
+This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these four plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite). If you need the REAPER ADM export extension to recognize Reverb/IR Reverb, see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md).
 
 ## License
 
-GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for both plugins is in this repository under `ear-production-suite-plugins/plugins/`.
+GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for all four plugins is in this repository under `ear-production-suite-plugins/plugins/`. Reverb for EAR Suite's MVerb tail engine is third-party code under its own license - see [`ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt`](ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt). The `reaper-adm-extension` patch (needed only for ADM export of Reverb/IR Reverb) is distributed separately under [reaper-adm-extension-patch/](reaper-adm-extension-patch/) — see its own README for details and license notes.
