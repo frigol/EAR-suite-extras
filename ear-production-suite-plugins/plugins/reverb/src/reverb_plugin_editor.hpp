@@ -151,7 +151,7 @@ class ReverbAudioProcessorEditor : public juce::AudioProcessorEditor {
   // section can be collapsed in one click instead of each row's own
   // collapse arrow individually.
   juce::TextButton collapseAllButton_;
-  bool allExpanded_{true};
+  bool allExpanded_{false};
   // One aligned header row of column titles (Az/El/Dist/.../Reset), shown
   // once above all 10 point rows, instead of repeating a short label next
   // to every single slider on every row - with many rows those repeated
@@ -162,6 +162,34 @@ class ReverbAudioProcessorEditor : public juce::AudioProcessorEditor {
   std::array<std::unique_ptr<ReverbPointControlsRow>,
             ReverbAudioProcessor::kNumPoints>
       pointRows_;
+
+  // Assigns all kNumPoints points' routing at once to a contiguous block
+  // of MAX_DAW_CHANNELS, e.g. "45-54" routes point 0 to channel 45, point
+  // 1 to 46, ... point 9 to 54 - instead of setting all 10 routing combos
+  // one at a time. Each point can still be overridden individually
+  // afterwards via its own row. Typing the block's start channel number
+  // jumps straight to it, same as each row's own routingJumpField_.
+  juce::Label bulkRoutingLabel_{{}, "Assign output channels"};
+  juce::ComboBox bulkRoutingCombo_;
+  juce::TextEditor bulkRoutingJumpField_;
+
+  // --- Output/Input OSC (both collapsed by default) - see Point
+  // Encoder's identical sections (point_encoder_plugin_editor.hpp) for
+  // the full rationale; collapse state here is local editor state, not
+  // persisted on the processor.
+  juce::TextButton oscOutputHeaderButton_;
+  bool oscOutputExpanded_{false};
+  juce::ToggleButton oscOutputEnableToggle_{"Enabled"};
+  juce::Label oscOutputIpLabel_{{}, "IP"};
+  juce::TextEditor oscOutputIpEditor_;
+  juce::Label oscOutputPortLabel_{{}, "Port"};
+  juce::TextEditor oscOutputPortEditor_;
+
+  juce::TextButton oscInputHeaderButton_;
+  bool oscInputExpanded_{false};
+  juce::ToggleButton oscInputEnableToggle_{"Enabled"};
+  juce::Label oscInputPortLabel_{{}, "Port"};
+  juce::TextEditor oscInputPortEditor_;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ReverbAudioProcessorEditor)
 };

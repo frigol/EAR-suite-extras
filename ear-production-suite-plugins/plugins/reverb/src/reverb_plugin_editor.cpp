@@ -48,6 +48,7 @@ void setupDspSlider(juce::Slider& s, double min, double max, double step,
                     double initial) {
   s.setSliderStyle(juce::Slider::LinearHorizontal);
   s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 70, 16);
+  s.setScrollWheelEnabled(false);
   s.setRange(min, max, step);
   s.setValue(initial, juce::dontSendNotification);
 }
@@ -93,8 +94,9 @@ class PointsColumnHeader : public juce::Component {
     g.setColour(EarColours::Label);
     g.setFont(EarFontsSingleton::instance().Description);
     auto area = getLocalBounds();
-    // ReverbPointControlsRow::resized()'s slider row starts at x=0 (no
-    // per-row collapse button anymore), so the header does too.
+    // ReverbPointControlsRow::resized()'s slider row (the row's own
+    // bottom half, below Active/name/routing) starts at x=0, so the
+    // header does too.
     for (auto const& title :
         {"Az", "El", "Dist", "Gain", "W", "H", "D", "Diff"}) {
       g.drawText(title, area.removeFromLeft(ReverbPointControlsRow::kColumnWidth),
@@ -112,8 +114,8 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
   addAndMakeVisible(masterViewport_);
 
   titleLabel_.setText(
-      "Reverb for EAR Suite (direction-weighted early reflections + shared "
-      "diffuse tail)",
+      "LF Reverb for EAR Production Suite (direction-weighted early "
+      "reflections + shared diffuse tail)",
       juce::dontSendNotification);
   titleLabel_.setFont(juce::Font(16.0f, juce::Font::bold));
   masterContent_.addAndMakeVisible(titleLabel_);
@@ -349,13 +351,20 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
     masterContent_.addAndMakeVisible(*slider);
 
   pointsHeading_.setText(
-      "Output points (Object-style parameters, like a real EAR Object)",
+      "Output points (Object-style parameters, like a real EAR Object - "
+      "turn Active off to free this point's Scene slot and route it "
+      "through a Point Encoder instance instead)",
       juce::dontSendNotification);
   masterContent_.addAndMakeVisible(pointsHeading_);
 
-  collapseAllButton_.setButtonText("Collapse all");
+  // Read from the processor (not just defaulted here), so the expanded/
+  // collapsed state survives the editor itself being closed and reopened
+  // - only a freshly created processor starts collapsed.
+  allExpanded_ = p_->getPointsExpanded();
+  collapseAllButton_.setButtonText(allExpanded_ ? "Collapse all" : "Expand all");
   collapseAllButton_.onClick = [this] {
     allExpanded_ = !allExpanded_;
+    p_->setPointsExpanded(allExpanded_);
     collapseAllButton_.setButtonText(allExpanded_ ? "Collapse all" : "Expand all");
     layoutContent();
   };
@@ -371,6 +380,44 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
     pointRows_[static_cast<size_t>(i)] = std::move(row);
   }
 
+  masterContent_.addAndMakeVisible(bulkRoutingLabel_);
+  {
+    constexpr int kNumPoints = ReverbAudioProcessor::kNumPoints;
+    constexpr int kNumRanges = MAX_DAW_CHANNELS - kNumPoints + 1;
+    for (int start = 1; start <= kNumRanges; ++start)
+      bulkRoutingCombo_.addItem(
+          juce::String(start) + "-" + juce::String(start + kNumPoints - 1), start);
+  }
+  bulkRoutingCombo_.setTextWhenNothingSelected("(choose a range...)");
+  bulkRoutingCombo_.onChange = [this] {
+    int start = bulkRoutingCombo_.getSelectedId();
+    if (start <= 0) return;
+    for (int i = 0; i < ReverbAudioProcessor::kNumPoints; ++i)
+      p_->setPointRouting(i, (start - 1) + i);
+    for (auto const& row : pointRows_) row->refreshFromProcessor();
+    if (sceneView_) sceneView_->refresh();
+  };
+  masterContent_.addAndMakeVisible(bulkRoutingCombo_);
+
+  bulkRoutingJumpField_.setInputRestrictions(3, "0123456789");
+  bulkRoutingJumpField_.setTextToShowWhenEmpty("#", juce::Colours::grey);
+  bulkRoutingJumpField_.setJustification(juce::Justification::centred);
+  bulkRoutingJumpField_.setTooltip(
+      "Type the range's start channel number and press Enter to jump "
+      "straight to it.");
+  auto jumpBulkRouting = [this] {
+    if (bulkRoutingJumpField_.getText().isEmpty()) return;
+    int n = bulkRoutingJumpField_.getText().getIntValue();
+    constexpr int kNumRanges =
+        MAX_DAW_CHANNELS - ReverbAudioProcessor::kNumPoints + 1;
+    if (n >= 1 && n <= kNumRanges)
+      bulkRoutingCombo_.setSelectedId(n, juce::sendNotification);
+    bulkRoutingJumpField_.clear();
+  };
+  bulkRoutingJumpField_.onReturnKey = jumpBulkRouting;
+  bulkRoutingJumpField_.onFocusLost = jumpBulkRouting;
+  masterContent_.addAndMakeVisible(bulkRoutingJumpField_);
+
   p_->onAvailableObjectsChanged = [this] {
     refreshActiveInputs();
     if (sceneView_) sceneView_->refresh();
@@ -382,6 +429,76 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
     for (auto const& row : pointRows_) row->refreshName();
     if (sceneView_) sceneView_->refresh();
   };
+
+  // --- Output OSC (collapsed by default) ------------------------------
+  oscOutputHeaderButton_.setButtonText(
+      oscOutputExpanded_ ? "v Output OSC" : "> Output OSC");
+  oscOutputHeaderButton_.onClick = [this] {
+    oscOutputExpanded_ = !oscOutputExpanded_;
+    oscOutputHeaderButton_.setButtonText(
+        oscOutputExpanded_ ? "v Output OSC" : "> Output OSC");
+    layoutContent();
+  };
+  masterContent_.addAndMakeVisible(oscOutputHeaderButton_);
+
+  oscOutputEnableToggle_.setToggleState(p_->getOscOutputEnabled(),
+                                        juce::dontSendNotification);
+  oscOutputEnableToggle_.onClick = [this] {
+    p_->setOscOutputEnabled(oscOutputEnableToggle_.getToggleState());
+  };
+  masterContent_.addAndMakeVisible(oscOutputEnableToggle_);
+
+  masterContent_.addAndMakeVisible(oscOutputIpLabel_);
+  oscOutputIpEditor_.setText(p_->getOscOutputIp(), juce::dontSendNotification);
+  oscOutputIpEditor_.onFocusLost = [this] {
+    p_->setOscOutputIp(oscOutputIpEditor_.getText());
+  };
+  oscOutputIpEditor_.onReturnKey = [this] {
+    p_->setOscOutputIp(oscOutputIpEditor_.getText());
+  };
+  masterContent_.addAndMakeVisible(oscOutputIpEditor_);
+
+  masterContent_.addAndMakeVisible(oscOutputPortLabel_);
+  oscOutputPortEditor_.setInputRestrictions(5, "0123456789");
+  oscOutputPortEditor_.setText(juce::String(p_->getOscOutputPort()),
+                               juce::dontSendNotification);
+  oscOutputPortEditor_.onFocusLost = [this] {
+    p_->setOscOutputPort(oscOutputPortEditor_.getText().getIntValue());
+  };
+  oscOutputPortEditor_.onReturnKey = [this] {
+    p_->setOscOutputPort(oscOutputPortEditor_.getText().getIntValue());
+  };
+  masterContent_.addAndMakeVisible(oscOutputPortEditor_);
+
+  // --- Input OSC (collapsed by default) --------------------------------
+  oscInputHeaderButton_.setButtonText(
+      oscInputExpanded_ ? "v Input OSC" : "> Input OSC");
+  oscInputHeaderButton_.onClick = [this] {
+    oscInputExpanded_ = !oscInputExpanded_;
+    oscInputHeaderButton_.setButtonText(
+        oscInputExpanded_ ? "v Input OSC" : "> Input OSC");
+    layoutContent();
+  };
+  masterContent_.addAndMakeVisible(oscInputHeaderButton_);
+
+  oscInputEnableToggle_.setToggleState(p_->getOscInputEnabled(),
+                                       juce::dontSendNotification);
+  oscInputEnableToggle_.onClick = [this] {
+    p_->setOscInputEnabled(oscInputEnableToggle_.getToggleState());
+  };
+  masterContent_.addAndMakeVisible(oscInputEnableToggle_);
+
+  masterContent_.addAndMakeVisible(oscInputPortLabel_);
+  oscInputPortEditor_.setInputRestrictions(5, "0123456789");
+  oscInputPortEditor_.setText(juce::String(p_->getOscInputPort()),
+                              juce::dontSendNotification);
+  oscInputPortEditor_.onFocusLost = [this] {
+    p_->setOscInputPort(oscInputPortEditor_.getText().getIntValue());
+  };
+  oscInputPortEditor_.onReturnKey = [this] {
+    p_->setOscInputPort(oscInputPortEditor_.getText().getIntValue());
+  };
+  masterContent_.addAndMakeVisible(oscInputPortEditor_);
 
   setResizable(true, true);
   setSize(1000, 870);
@@ -691,6 +808,18 @@ void ReverbAudioProcessorEditor::layoutContent() {
     headingRow.removeFromRight(8);
     pointsHeading_.setBounds(headingRow);
   }
+  bulkRoutingLabel_.setVisible(allExpanded_);
+  bulkRoutingCombo_.setVisible(allExpanded_);
+  bulkRoutingJumpField_.setVisible(allExpanded_);
+  if (allExpanded_) {
+    auto row = takeTop(kRowHeight);
+    bulkRoutingLabel_.setBounds(row.removeFromLeft(150));
+    row.removeFromLeft(8);
+    bulkRoutingCombo_.setBounds(row.removeFromLeft(110));
+    row.removeFromLeft(4);
+    bulkRoutingJumpField_.setBounds(row.removeFromLeft(34));
+    y += 4;
+  }
   pointsColumnHeader_->setVisible(allExpanded_);
   if (allExpanded_) {
     pointsColumnHeader_->setBounds(takeTop(18));
@@ -703,6 +832,37 @@ void ReverbAudioProcessorEditor::layoutContent() {
       y += ReverbPointControlsRow::kPreferredHeight + 2;
     }
   }
+  y += 10;
+
+  oscOutputHeaderButton_.setBounds(takeTop(kRowHeight).removeFromLeft(160));
+  if (oscOutputExpanded_) {
+    auto row = takeTop(kRowHeight);
+    oscOutputEnableToggle_.setBounds(row.removeFromLeft(90));
+    row.removeFromLeft(12);
+    oscOutputIpLabel_.setBounds(row.removeFromLeft(24));
+    oscOutputIpEditor_.setBounds(row.removeFromLeft(140));
+    row.removeFromLeft(12);
+    oscOutputPortLabel_.setBounds(row.removeFromLeft(36));
+    oscOutputPortEditor_.setBounds(row.removeFromLeft(70));
+  }
+  oscOutputEnableToggle_.setVisible(oscOutputExpanded_);
+  oscOutputIpLabel_.setVisible(oscOutputExpanded_);
+  oscOutputIpEditor_.setVisible(oscOutputExpanded_);
+  oscOutputPortLabel_.setVisible(oscOutputExpanded_);
+  oscOutputPortEditor_.setVisible(oscOutputExpanded_);
+  y += 10;
+
+  oscInputHeaderButton_.setBounds(takeTop(kRowHeight).removeFromLeft(160));
+  if (oscInputExpanded_) {
+    auto row = takeTop(kRowHeight);
+    oscInputEnableToggle_.setBounds(row.removeFromLeft(90));
+    row.removeFromLeft(12);
+    oscInputPortLabel_.setBounds(row.removeFromLeft(36));
+    oscInputPortEditor_.setBounds(row.removeFromLeft(70));
+  }
+  oscInputEnableToggle_.setVisible(oscInputExpanded_);
+  oscInputPortLabel_.setVisible(oscInputExpanded_);
+  oscInputPortEditor_.setVisible(oscInputExpanded_);
   y += 10;
 
   masterContent_.setSize(contentWidth, y);

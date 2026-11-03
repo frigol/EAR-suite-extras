@@ -4,14 +4,16 @@ Unofficial plugins extending the [EBU ADM Renderer Production Suite](https://git
 
 **This is an independent, unofficial fork. It is not affiliated with, endorsed by, or supported by the BBC, EBU, or IRT.** See [COPYRIGHT.TXT](COPYRIGHT.TXT) and [LICENSE.TXT](LICENSE.TXT).
 
-**Version 1.1.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
+**Version 1.2.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
 
 ## What's here
 
-- **Object OSC for EAR Suite** — the EAR Object plugin with OSC remote control added: an external system (e.g. [ControlGRIS2](https://github.com/GRIS-UdeM/ControlGris)) can drive an object's position and extent live. Several instances can share one UDP port, each identified by its own source index.
-- **Custom Monitoring for EAR Suite** — the EAR Monitoring plugin, but the loudspeaker layout is loaded at runtime from a plain text file instead of chosen from a fixed list of standard layouts, so it can decode to any loudspeaker rig, including subwoofers at arbitrary positions.
-- **Reverb for EAR Suite** — a direction-weighted spatial reverb: reports 10 points (the same "4+6+0" hexagon+top-4 layout as BS.2051's own mid/top rings) to EAR Scene as independent Objects, each panned from the active source(s) feeding it, with early reflections plus a shared algorithmic diffuse tail (switchable between a custom FDN and an MVerb plate engine). Needs EAR Scene (from the official EAR Production Suite) already running in the session.
-- **IR Reverb for EAR Suite** — the same 10-point architecture as Reverb for EAR Suite, but the diffuse tail is a convolution against a loaded impulse response instead of an algorithmic engine. Accepts mono, stereo, AmbiX (any order), or a 9/10-channel discrete array IR (PCMA-3D-style layout); each of the 10 output points has a full Object-style parameter set (position, gain, width/height/depth, diffuse) and can be adjusted independently afterwards.
+All plugin names below are short DAW-visible names ("LF ..."); every one of them is for **EAR Production Suite** and needs its shared library/EAR Scene already running in the session.
+
+- **LF Object OSC** — the EAR Object plugin with OSC remote control added: an external system (e.g. [ControlGRIS2](https://github.com/GRIS-UdeM/ControlGris)) can drive an object's position and extent live. Several instances can share one UDP port, each identified by its own source index.
+- **LF Custom Monitoring** — the EAR Monitoring plugin, but the loudspeaker layout is loaded at runtime from a plain text file instead of chosen from a fixed list of standard layouts, so it can decode to any loudspeaker rig, including subwoofers at arbitrary positions.
+- **LF Reverb** — a direction-weighted spatial reverb: reports 10 points (the same "4+6+0" hexagon+top-4 layout as BS.2051's own mid/top rings) to EAR Scene as independent Objects, each panned from the active source(s) feeding it, with early reflections plus a shared algorithmic diffuse tail (switchable between a custom FDN and an MVerb plate engine). Needs EAR Scene (from the official EAR Production Suite) already running in the session.
+- **LF IR Reverb** — the same 10-point architecture as LF Reverb, but the diffuse tail is a convolution against a loaded impulse response instead of an algorithmic engine. Accepts mono, stereo, AmbiX (any order), or a 9/10-channel discrete array IR (PCMA-3D-style layout); each of the 10 output points has a full Object-style parameter set (position, gain, width/height/depth, diffuse) and can be adjusted independently afterwards.
 
 Both Reverb plugins also need **EAR Scene** running in the session to hear anything - they register their 10 points with it exactly like a normal EAR Object plugin, they don't output audio on their own track.
 
@@ -25,7 +27,7 @@ All four are VST3 only (macOS Apple Silicon prebuilt; other platforms need a sou
 ./install.sh
 ```
 
-This copies all four `.vst3` bundles into `~/Library/Audio/Plug-Ins/VST3/`, and - if it detects REAPER's official `reaper-adm-extension` already installed - patches it so Reverb/IR Reverb export correctly to ADM (see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md); it's safe to re-run, and it backs up the original file first).
+This copies all four `.vst3` bundles into `~/Library/Audio/Plug-Ins/VST3/`, and - if it detects REAPER's official `reaper-adm-extension` already installed - patches it so LF Reverb/LF IR Reverb export correctly to ADM (see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md); it's safe to re-run, and it backs up the original file first).
 
 Or by hand, on any platform:
 
@@ -34,13 +36,13 @@ Or by hand, on any platform:
    - macOS: `~/Library/Audio/Plug-Ins/VST3/`
    - Windows: `C:\Program Files\Common Files\VST3\`
 3. Restart your DAW and rescan plugins if it doesn't pick them up automatically.
-4. If you use REAPER's ADM export with Reverb or IR Reverb, also apply the patch described in [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md) - without it, export silently drops these two plugins' points.
+4. If you use REAPER's ADM export with LF Reverb or LF IR Reverb, also apply the patch described in [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md) - without it, export silently drops these two plugins' points.
 
 The prebuilt `.vst3` bundles in this repo are macOS (Apple Silicon, arm64) only. For Windows, Linux, or an Intel Mac, build from source (below).
 
 ---
 
-## Custom Monitoring: the loudspeaker layout file
+## LF Custom Monitoring: the loudspeaker layout file
 
 Loaded via the **Load layout...** button in the plugin. One speaker per line:
 
@@ -77,7 +79,7 @@ If a file fails to load, the plugin shows an error dialog with the problem and l
 
 ---
 
-## Object OSC for EAR Suite: remote control
+## LF Object OSC: remote control
 
 In the plugin, tick **OSC remote control** and choose a **Protocol**:
 
@@ -87,7 +89,7 @@ Reverse-engineered from a live capture of ControlGRIS2's actual OSC output (not 
 
 - **Port**: must match the port ControlGRIS2 sends to (its "Send on port" setting, Configuration → Settings tab).
 - **Src #**: must match ControlGRIS2's own "OSC plugin ID" for the source you want this instance to follow.
-- Several Object OSC instances can share the *same* port, each with a different Src #, driven by different ControlGRIS2 instances or sources — each instance filters incoming messages by its own Src # and ignores the rest. (Internally, the plugin shares one UDP socket per port across all its own instances in the host process — you don't need a separate port per instance.)
+- Several LF Object OSC instances can share the *same* port, each with a different Src #, driven by different ControlGRIS2 instances or sources — each instance filters incoming messages by its own Src # and ignores the rest. (Internally, the plugin shares one UDP socket per port across all its own instances in the host process — you don't need a separate port per instance.)
 - Controls: Azimuth and Elevation (from ControlGRIS2's position pad), and Width/Height (from ControlGRIS2's Azimuth Span / Elevation Span, with Size automatically unlinked so the two move independently).
 - ControlGRIS2's DOME mode has no distance control, so Distance is left fixed at 1.0 — not driven by OSC in this protocol.
 
@@ -126,8 +128,8 @@ Built plugins land in `build/<preset>/ear-production-suite-plugins/VST3/`. Copy 
 
 If you cloned without `--recursive`, run `git submodule update --init --recursive` afterwards.
 
-This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these four plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite). If you need the REAPER ADM export extension to recognize Reverb/IR Reverb, see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md).
+This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these four plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite). If you need the REAPER ADM export extension to recognize LF Reverb/LF IR Reverb, see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md).
 
 ## License
 
-GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for all four plugins is in this repository under `ear-production-suite-plugins/plugins/`. Reverb for EAR Suite's MVerb tail engine is third-party code under its own license - see [`ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt`](ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt). The `reaper-adm-extension` patch (needed only for ADM export of Reverb/IR Reverb) is distributed separately under [reaper-adm-extension-patch/](reaper-adm-extension-patch/) — see its own README for details and license notes.
+GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for all four plugins is in this repository under `ear-production-suite-plugins/plugins/`. LF Reverb's MVerb tail engine is third-party code under its own license - see [`ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt`](ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt). The `reaper-adm-extension` patch (needed only for ADM export of LF Reverb/LF IR Reverb) is distributed separately under [reaper-adm-extension-patch/](reaper-adm-extension-patch/) — see its own README for details and license notes.

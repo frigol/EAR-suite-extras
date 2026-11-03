@@ -60,8 +60,11 @@ void IrReverbSceneView::paint(juce::Graphics& g) {
 
   for (int i = 0; i < IrReverbAudioProcessor::kNumPoints; ++i) {
     auto params = p_->getPointParams(i);
+    bool active = p_->getPointActive(i);
     bool routed = p_->getPointRouting(i) >= 0;
-    auto colour = routed ? p_->getTrackColour() : juce::Colours::grey;
+    auto colour = !active ? juce::Colours::darkgrey
+                 : routed ? p_->getTrackColour()
+                          : juce::Colours::grey;
     drawDot(g, params.azimuthDeg, params.elevationDeg,
            juce::jlimit(0.0f, 1.0f, params.distance), colour);
   }

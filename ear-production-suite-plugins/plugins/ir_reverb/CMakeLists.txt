@@ -51,9 +51,9 @@ add_juce_vst3_plugin(ir_reverb
   SOURCES ${SOURCES_IR_REVERB} ${HEADERS_IR_REVERB}
   IDE_FOLDER ${IDE_FOLDER_PLUGINS}
   CODE_SUFFIX "22"
-  DISPLAY_NAME "IR Reverb for EAR Suite"
+  DISPLAY_NAME "LF IR Reverb"
   DESCRIPTION "Convolution-based spatial reverb: reverberates a selected EAR Object/Object OSC through a loaded impulse response and sends 10 points to EAR Scene as independent objects. Not affiliated with or endorsed by EBU."
-  OUTPUT_NAME "IR Reverb for EAR Suite"
+  OUTPUT_NAME "LF IR Reverb"
   MANUFACTURER_NAME "Luca Frigo"
   MANUFACTURER_WEBSITE "https://github.com/frigol/ear-suite-extras"
   MANUFACTURER_CODE "4C462020" # Hex for 'LF  '

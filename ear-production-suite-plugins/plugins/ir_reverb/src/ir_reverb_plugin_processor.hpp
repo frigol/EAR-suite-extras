@@ -15,6 +15,7 @@
 #include "scene_store.pb.h"
 #include <daw_channel_count.h>
 #include "reaper_vst3_interfaces.h"
+#include "osc_port_registry.hpp"
 #include "components/read_only_audio_parameter_int.hpp"
 
 namespace ear {
@@ -25,38 +26,47 @@ class MonitoringMetadataReceiver;
 }  // namespace plugin
 }  // namespace ear
 
-/** @brief "IR Reverb for EAR Suite" - skeleton (v1).
+/** @brief "LF IR Reverb".
  *
- * Same overall structure as the algorithmic "Reverb for EAR Suite": takes
+ * Same overall structure as the algorithmic "LF Reverb": takes
  * up to kMaxInputs mono sends, discovers them via Scene's own PUB
  * broadcast exactly like that plugin does (see communication::
  * MonitoringControlConnection/MonitoringMetadataReceiver, unchanged), and
  * outputs kNumPoints channels in the same "4+6+0" layout, each
  * independently registered with Scene as its own ADM Object.
  *
- * The difference is the engine: instead of an algorithmic FDN/MVerb tail,
- * each output point convolves its own direction-weighted sum of the
- * active sources against a single loaded impulse response (see
- * processBlock()) - "encode (direction-weight) then sum then convolve",
- * so a source's direction is still audible in the result (louder at the
- * points nearest its own direction) while the convolution cost stays at
- * one pass per point, independent of how many sources are active.
+ * Each point has its own "Active" toggle, ON by default (see the
+ * algorithmic Reverb's own class comment for the full reasoning) - turning
+ * it off unregisters that point from Scene (frees a routed channel/Scene
+ * Object slot) without stopping its audio output, so it can be routed
+ * into a "LF Multi-Encoder" instance instead when several
+ * reverb instances in one session would otherwise need more Scene Objects
+ * than are available.
  *
- * v1 scope: mono, stereo and full-order AmbiX (ACN/SN3D) impulse
- * responses - see IrMode below. A mono IR is convolved independently per
- * output point, each fed that point's own direction-weighted sum of the
- * active sources; a stereo IR reuses that exact same per-point pipeline,
- * just loading each point's own convolution from whichever of the 2
- * channels matches its side (see loadStereoIr()) instead of from channel
- * 0 of everything. An AmbiX IR instead convolves once per ACN channel
- * against ONE shared
- * ambisonic bus (every active source encoded into it by its own
- * direction's spherical-harmonic coefficients and summed in), then
- * decodes that convolved bus back out to the 10 points using the same
- * coefficients evaluated at each point's own direction - "encode then
- * sum then convolve then decode" - so the convolution cost is
- * (order+1)^2 passes total, independent of how many sources or how many
- * output points there are. See ir_reverb_dsp.hpp and processBlock().
+ * The difference from the algorithmic engine is the tail: instead of an
+ * algorithmic FDN/MVerb, each output point convolves its own direction-
+ * weighted sum of the active sources against a single loaded impulse
+ * response (see processBlock()) - "encode (direction-weight) then sum
+ * then convolve", so a source's direction is still audible in the result
+ * (louder at the points nearest its own direction) while the convolution
+ * cost stays at one pass per point, independent of how many sources are
+ * active.
+ *
+ * Supported IR types: mono, stereo and full-order AmbiX (ACN/SN3D), plus
+ * a recognized discrete-array layout (PCMA-3D etc) - see IrMode below. A
+ * mono IR is convolved independently per output point, each fed that
+ * point's own direction-weighted sum of the active sources; a stereo IR
+ * reuses that exact same per-point pipeline, just loading each point's
+ * own convolution from whichever of the 2 channels matches its side (see
+ * loadStereoIr()) instead of from channel 0 of everything. An AmbiX IR
+ * instead convolves once per ACN channel against ONE shared ambisonic
+ * bus (every active source encoded into it by its own direction's
+ * spherical-harmonic coefficients and summed in), then decodes that
+ * convolved bus back out to the 10 points using the same coefficients
+ * evaluated at each point's own direction - "encode then sum then
+ * convolve then decode" - so the convolution cost is (order+1)^2 passes
+ * total, independent of how many sources or how many output points there
+ * are. See ir_reverb_dsp.hpp and processBlock().
  *
  * A discrete-array IR (PCMA-3D etc) reuses the same encode-sum-convolve-
  * decode shape as AmbiX, but with nearest-point angular blending (see
@@ -74,9 +84,8 @@ class MonitoringMetadataReceiver;
  *
  * Deferred, not forgotten: a proper AllRAD/max-rE-weighted ambisonic decode
  * (the current one is a simple, correct-but-unoptimised "basic" decoder -
- * see ambisonicEncodingSN3D()'s own comment), a saved-IR library combo
- * beyond the current flat list, and reaper-adm-extension/ADM export
- * recognition for this plugin specifically.
+ * see ambisonicEncodingSN3D()'s own comment) and a saved-IR library combo
+ * beyond the current flat list.
  */
 class IrReverbAudioProcessor : public juce::AudioProcessor,
                                public juce::VST3ClientExtensions {
@@ -193,6 +202,12 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   void setPointRouting(int pointIndex, int sceneChannel);
   int getPointRouting(int pointIndex) const;
 
+  // Whether this point is currently registered with Scene at all - ON by
+  // default (see the class comment). The point's audio output keeps
+  // running either way.
+  void setPointActive(int pointIndex, bool active);
+  bool getPointActive(int pointIndex) const;
+
   // Object-style per-point parameters: default to the point's nominal
   // "4+6+0" direction, overridable afterwards exactly like a real EAR
   // Object - mirrors the algorithmic Reverb's own API 1:1.
@@ -242,6 +257,34 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   float getPreDelayMs() const;
   void setPreDelayMs(float ms);
 
+  /** @brief How the loaded IR itself is reshaped before convolution -
+   * applied to the raw file once per change (see applyIrShaping()), not
+   * per processBlock(), so these are "load-time" controls, not automatable
+   * DSP parameters. */
+  struct IrShapeParams {
+    // Resamples the IR to stretch/compress its own duration before
+    // anything else - >1 genuinely lengthens it past the loaded file's
+    // own length (reads the source at a slower rate, same basic
+    // technique as a sampler's "stretch" - darkens/slows the diffuse
+    // tail's own spectral content as a side effect, most audible on a
+    // short/characterful IR, least audible on an already-dense,
+    // noise-like tail). 1.0 = unmodified length.
+    float stretch{1.0f};
+    // Exponential-decay trim applied after stretch - 1.0 = unmodified;
+    // lower values accelerate the fade-out, shortening the *perceived*
+    // tail within the (possibly already stretched) buffer. This can only
+    // shorten/soften, never lengthen - use Stretch for that.
+    float decay{1.0f};
+    // One-pole lowpass applied to the whole (stretched+decayed) IR - 0 =
+    // no damping/full brightness, 1 = heavily darkened. Same qualitative
+    // role as the algorithmic Reverb's own Damping control.
+    float damping{0.0f};
+  };
+  IrShapeParams getIrShapeParams() const;
+  void setIrStretch(float stretch);
+  void setIrDecay(float decay);
+  void setIrDamping(float damping);
+
   // DSP parameter presets - same scope/convention as the algorithmic
   // Reverb's own (Wet level/Pre-delay only, not per-point routing/
   // position - a preset is a reusable "sound").
@@ -255,6 +298,12 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   std::function<void()> onTrackNameChanged;
   juce::Colour getTrackColour() const { return trackColour_; }
 
+  // Whether the editor's "Output points" section is currently expanded -
+  // see the algorithmic Reverb's own getPointsExpanded() for why this
+  // lives here and not in the editor.
+  bool getPointsExpanded() const { return pointsExpanded_; }
+  void setPointsExpanded(bool expanded) { pointsExpanded_ = expanded; }
+
   const std::array<PointInfo, kNumPoints>& getPointLayout() const {
     return pointInfo_;
   }
@@ -262,6 +311,20 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   std::function<void()> onAvailableObjectsChanged;
 
   enum class IrMode { Mono, Stereo, Ambisonic, Array };
+
+  // --- OSC output (reports each point's own position/active state) ---
+  bool getOscOutputEnabled() const { return oscOutputEnabled_; }
+  void setOscOutputEnabled(bool enabled);
+  juce::String getOscOutputIp() const { return oscOutputIp_; }
+  void setOscOutputIp(const juce::String& ip);
+  int getOscOutputPort() const { return oscOutputPort_; }
+  void setOscOutputPort(int port);
+
+  // --- OSC input (controls points remotely) ---------------------------
+  bool getOscInputEnabled() const { return oscInputEnabled_; }
+  void setOscInputEnabled(bool enabled);
+  int getOscInputPort() const { return oscInputPort_; }
+  void setOscInputPort(int port);
 
  private:
   void onSceneReceived(const ear::plugin::proto::SceneStore& store);
@@ -272,8 +335,11 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   void notifyAvailableObjectsChangedOnMessageThread();
   void notifyTrackNameChangedOnMessageThread();
   void pushAllPointPropertiesToScene();
+  void buildPointConnector(int pointIndex);
+  void teardownPointConnector(int pointIndex);
   // Mono path: (re)loads the same mono IR file into all kNumPoints fixed
-  // per-point convolutions_ below - called with dspMutex_ already held.
+  // per-point convolutions_ below, from shapedIr_ - called with dspMutex_
+  // already held.
   void reloadMonoConvolutions();
   // Stereo path: reuses the exact same per-point convolutions_/preDelay_/
   // pointFeedBuffer_ pipeline as Mono (each point still gets its own
@@ -283,36 +349,74 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   // (positive azimuth, matching this plugin's own L/LS/LTF/LTR naming)
   // get channel 0, points on the right side get channel 1, and the two
   // centre points (C/CB) are split one to each channel for a little
-  // decorrelation. Called with dspMutex_ already held.
-  void loadStereoIr(juce::AudioFormatReader& reader);
+  // decorrelation. Reads from shapedIr_. Called with dspMutex_ already held.
+  void loadStereoIr();
   // Ambisonic path: (re)builds ambiConvolutions_/ambiPreDelay_/the feed
-  // buffers for a numChannels-channel HOA file, reading all of it via
-  // `reader` and loading each channel into its own convolution - called
-  // with dspMutex_ already held.
-  void loadAmbisonicIr(juce::AudioFormatReader& reader, int numChannels);
+  // buffers for a numChannels-channel HOA file, reading each channel out
+  // of shapedIr_ into its own convolution - called with dspMutex_ already
+  // held.
+  void loadAmbisonicIr(int numChannels);
   // Array path: like loadAmbisonicIr() (one convolution per raw channel,
-  // reading the whole file once and splitting it), but channel directions
-  // come from a recognized array preset (arrayChannelDirections_) instead
-  // of being implied by ACN/SN3D order - called with dspMutex_ held.
-  void loadArrayIr(juce::AudioFormatReader& reader, int numChannels);
-  // Decides Mono/Stereo/Ambisonic/Array for a just-opened reader and
-  // dispatches to the matching load*() - shared by loadIrByName() and
-  // prepareToPlay()'s reload-on-reprepare path. Called with dspMutex_
-  // held; `reader` must already be open for loadedIrFile_.
+  // from shapedIr_), but channel directions come from a recognized array
+  // preset (arrayChannelDirections_) instead of being implied by ACN/SN3D
+  // order - called with dspMutex_ held.
+  void loadArrayIr(int numChannels);
+  // Decides Mono/Stereo/Ambisonic/Array for a just-opened reader, reads it
+  // into rawIr_, and dispatches to rebuildConvolutionsFromShapedIr() -
+  // shared by loadIrByName() and prepareToPlay()'s reload-on-reprepare
+  // path. Called with dspMutex_ held; `reader` must already be open for
+  // loadedIrFile_.
   void decideModeAndLoad(juce::AudioFormatReader& reader);
+  // Re-applies IR shaping (see IrShapeParams/applyIrShaping()) to rawIr_
+  // and rebuilds whichever mode's convolutions are current (irMode_) from
+  // the result - called whenever a shaping parameter changes, and once at
+  // the end of decideModeAndLoad() for the initial load. Called with
+  // dspMutex_ already held.
+  void rebuildConvolutionsFromShapedIr();
+  // Resamples rawIr_ by irShape_.stretch, then applies the decay envelope
+  // and damping filter, writing the result to shapedIr_/
+  // shapedIrSampleRate_ - see IrShapeParams's own field comments for what
+  // each stage does. Called with dspMutex_ already held.
+  void applyIrShaping();
   // Shared by getStateInformation/setStateInformation's own "Dsp" XML
   // node and by the preset save/load methods - a preset file is just
   // this same node written to its own standalone file.
   void writeDspXml(juce::XmlElement& dspXml) const;
   void applyDspXml(const juce::XmlElement& dspXml);
 
+  void sendPointOsc(int pointIndex);
+  void reconnectOscOutputLocked();
+
+  bool oscOutputEnabled_{false};
+  juce::String oscOutputIp_{"127.0.0.1"};
+  int oscOutputPort_{9000};
+  juce::OSCSender oscSender_;
+  std::mutex oscSenderMutex_;
+
+  class OscInputSubscriber : public ear::plugin::OscPortRegistry::Subscriber {
+   public:
+    explicit OscInputSubscriber(IrReverbAudioProcessor& owner) : owner_(owner) {}
+    void handleOscMessage(const juce::OSCMessage& message) override {
+      owner_.handleOscMessage(message);
+    }
+   private:
+    IrReverbAudioProcessor& owner_;
+  };
+  void handleOscMessage(const juce::OSCMessage& message);
+
+  bool oscInputEnabled_{false};
+  int oscInputPort_{9001};
+  OscInputSubscriber oscInputSubscriber_{*this};
+
   std::array<PointInfo, kNumPoints> pointInfo_;
   juce::String trackName_;
   juce::Colour trackColour_{juce::Colours::orange};
+  bool pointsExpanded_{false};
   std::array<std::unique_ptr<ear::plugin::IrReverbPointConnector>, kNumPoints>
       pointConnectors_;
   std::array<std::unique_ptr<ear::plugin::ObjectBackend>, kNumPoints>
       pointBackends_;
+  std::array<bool, kNumPoints> pointActive_;
   std::array<int, kNumPoints> pointRouting_;
   std::array<PointParams, kNumPoints> pointParams_;
   mutable std::mutex pointParamsMutex_;
@@ -354,6 +458,18 @@ class IrReverbAudioProcessor : public juce::AudioProcessor,
   mutable std::mutex dspMutex_;
   float wetLevel_{1.0f};
   float preDelayMs_{0.0f};
+
+  // The IR exactly as read from the loaded file (all channels, full
+  // length) - kept so Stretch/Decay/Damping can be re-applied from
+  // scratch each time one changes, rather than compounding onto an
+  // already-shaped buffer. shapedIr_/shapedIrSampleRate_ are what the
+  // mode-specific load*() functions actually build convolutions from -
+  // see applyIrShaping().
+  juce::AudioBuffer<float> rawIr_;
+  double rawIrSampleRate_{48000.0};
+  juce::AudioBuffer<float> shapedIr_;
+  double shapedIrSampleRate_{48000.0};
+  IrShapeParams irShape_;
 
   ear::plugin::communication::MonitoringControlConnection
       sceneControlConnection_;

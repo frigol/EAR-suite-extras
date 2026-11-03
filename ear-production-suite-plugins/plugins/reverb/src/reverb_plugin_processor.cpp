@@ -59,6 +59,7 @@ ReverbAudioProcessor::ReverbAudioProcessor()
   buildPointLayout();
 
   pointRouting_.fill(-1);
+  pointActive_.fill(true);  // every point is a live Scene Object by default
 
   // These must stay the ONLY addParameter() calls in this processor,
   // added in point order 0..9 - reaper-adm-extension reads each by raw
@@ -110,19 +111,7 @@ ReverbAudioProcessor::ReverbAudioProcessor()
     pointParams_[static_cast<size_t>(i)].elevationDeg =
         pointInfo_[i].nominalElevationDeg;
 
-    pointConnectors_[i] = std::make_unique<ReverbPointConnector>();
-    pointBackends_[i] =
-        std::make_unique<ObjectBackend>(pointConnectors_[i].get());
-    pointConnectors_[i]->setName(getPointDisplayName(i).toStdString());
-    pointConnectors_[i]->setColour(trackColour_.getARGB());
-    pointConnectors_[i]->setPosition(pointParams_[static_cast<size_t>(i)].azimuthDeg,
-                                     pointParams_[static_cast<size_t>(i)].elevationDeg,
-                                     pointParams_[static_cast<size_t>(i)].distance);
-    pointConnectors_[i]->setGain(pointParams_[static_cast<size_t>(i)].gain);
-    pointConnectors_[i]->setWidth(pointParams_[static_cast<size_t>(i)].width);
-    pointConnectors_[i]->setHeight(pointParams_[static_cast<size_t>(i)].height);
-    pointConnectors_[i]->setDepth(pointParams_[static_cast<size_t>(i)].depth);
-    pointConnectors_[i]->setDiffuse(pointParams_[static_cast<size_t>(i)].diffuse);
+    if (pointActive_[static_cast<size_t>(i)]) buildPointConnector(i);
     pushExportParams(i);
 
     earlyReflections_[static_cast<size_t>(i)].prepare(48000.0, i);
@@ -141,20 +130,69 @@ void ReverbAudioProcessor::setIHostApplication(Steinberg::FUnknown* unknown) {
   VST3ClientExtensions::setIHostApplication(unknown);
   if (!reaperHost_) return;
 
+  // Requested unconditionally for every point regardless of active state -
+  // cheap (just a counter from the host extension), and means later
+  // reactivating a point never needs to revisit this step.
   for (int i = 0; i < kNumPoints; ++i) {
     int id = static_cast<int>(requestInstanceIdFromExtension(reaperHost_));
     inputInstanceIdParams_[static_cast<size_t>(i)]->internalSetIntAndNotifyHost(id);
-    pointConnectors_[static_cast<size_t>(i)]->setInputInstanceId(id);
+    if (pointConnectors_[static_cast<size_t>(i)])
+      pointConnectors_[static_cast<size_t>(i)]->setInputInstanceId(id);
   }
 }
 
 ReverbAudioProcessor::~ReverbAudioProcessor() {
   *aliveFlag_ = false;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
   if (sceneMetadataReceiver_) {
     sceneMetadataReceiver_->shutdown();
   }
   sceneControlConnection_.onConnectionLost(nullptr);
   sceneControlConnection_.onConnectionEstablished(nullptr);
+}
+
+void ReverbAudioProcessor::buildPointConnector(int pointIndex) {
+  auto idx = static_cast<size_t>(pointIndex);
+  if (pointConnectors_[idx]) return;  // already live
+  pointConnectors_[idx] = std::make_unique<ReverbPointConnector>();
+  pointBackends_[idx] = std::make_unique<ObjectBackend>(pointConnectors_[idx].get());
+  pointConnectors_[idx]->setName(getPointDisplayName(pointIndex).toStdString());
+  pointConnectors_[idx]->setColour(trackColour_.getARGB());
+  pointConnectors_[idx]->setRouting(pointRouting_[idx]);
+  auto const& params = pointParams_[idx];
+  pointConnectors_[idx]->setPosition(params.azimuthDeg, params.elevationDeg,
+                                     params.distance);
+  pointConnectors_[idx]->setGain(params.gain);
+  pointConnectors_[idx]->setWidth(params.width);
+  pointConnectors_[idx]->setHeight(params.height);
+  pointConnectors_[idx]->setDepth(params.depth);
+  pointConnectors_[idx]->setDiffuse(params.diffuse);
+  if (reaperHost_)
+    pointConnectors_[idx]->setInputInstanceId(
+        inputInstanceIdParams_[idx]->get());
+}
+
+void ReverbAudioProcessor::teardownPointConnector(int pointIndex) {
+  auto idx = static_cast<size_t>(pointIndex);
+  pointBackends_[idx].reset();
+  pointConnectors_[idx].reset();
+}
+
+void ReverbAudioProcessor::setPointActive(int pointIndex, bool active) {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return;
+  auto idx = static_cast<size_t>(pointIndex);
+  pointActive_[idx] = active;
+  if (active)
+    buildPointConnector(pointIndex);
+  else
+    teardownPointConnector(pointIndex);
+  sendPointOsc(pointIndex);
+}
+
+bool ReverbAudioProcessor::getPointActive(int pointIndex) const {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return false;
+  return pointActive_[static_cast<size_t>(pointIndex)];
 }
 
 void ReverbAudioProcessor::buildPointLayout() {
@@ -399,7 +437,8 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
     buffer.clear(outCh, 0, numSamples);
   }
 
-  for (auto const& backend : pointBackends_) backend->triggerMetadataSend();
+  for (auto const& backend : pointBackends_)
+    if (backend) backend->triggerMetadataSend();
 }
 
 AudioProcessorEditor* ReverbAudioProcessor::createEditor() {
@@ -530,7 +569,8 @@ ReverbAudioProcessor::InputSlotInfo ReverbAudioProcessor::getInputSlotInfo(
 void ReverbAudioProcessor::setPointRouting(int pointIndex, int sceneChannel) {
   if (pointIndex < 0 || pointIndex >= kNumPoints) return;
   pointRouting_[static_cast<size_t>(pointIndex)] = sceneChannel;
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setRouting(sceneChannel);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setRouting(sceneChannel);
 }
 
 int ReverbAudioProcessor::getPointRouting(int pointIndex) const {
@@ -572,9 +612,10 @@ void ReverbAudioProcessor::setPointPosition(int pointIndex, float azimuthDeg,
     params.elevationDeg = elevationDeg;
     params.distance = juce::jmax(0.0f, distance);
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setPosition(
-      azimuthDeg, elevationDeg, juce::jmax(0.0f, distance));
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setPosition(azimuthDeg, elevationDeg, juce::jmax(0.0f, distance));
   pushExportParams(pointIndex);
+  sendPointOsc(pointIndex);
 }
 
 void ReverbAudioProcessor::setPointGain(int pointIndex, float linearGain) {
@@ -583,7 +624,8 @@ void ReverbAudioProcessor::setPointGain(int pointIndex, float linearGain) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].gain = linearGain;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setGain(linearGain);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setGain(linearGain);
   pushExportParams(pointIndex);
 }
 
@@ -593,7 +635,8 @@ void ReverbAudioProcessor::setPointWidth(int pointIndex, float width) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].width = width;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setWidth(width);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setWidth(width);
   pushExportParams(pointIndex);
 }
 
@@ -603,7 +646,8 @@ void ReverbAudioProcessor::setPointHeight(int pointIndex, float height) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].height = height;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setHeight(height);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setHeight(height);
   pushExportParams(pointIndex);
 }
 
@@ -613,7 +657,8 @@ void ReverbAudioProcessor::setPointDepth(int pointIndex, float depth) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].depth = depth;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setDepth(depth);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setDepth(depth);
   pushExportParams(pointIndex);
 }
 
@@ -623,7 +668,8 @@ void ReverbAudioProcessor::setPointDiffuse(int pointIndex, float diffuse) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].diffuse = diffuse;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setDiffuse(diffuse);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setDiffuse(diffuse);
   pushExportParams(pointIndex);
 }
 
@@ -636,13 +682,14 @@ void ReverbAudioProcessor::resetPointToNominal(int pointIndex) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)] = defaults;
   }
-  auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get();
-  c->setPosition(defaults.azimuthDeg, defaults.elevationDeg, defaults.distance);
-  c->setGain(defaults.gain);
-  c->setWidth(defaults.width);
-  c->setHeight(defaults.height);
-  c->setDepth(defaults.depth);
-  c->setDiffuse(defaults.diffuse);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get()) {
+    c->setPosition(defaults.azimuthDeg, defaults.elevationDeg, defaults.distance);
+    c->setGain(defaults.gain);
+    c->setWidth(defaults.width);
+    c->setHeight(defaults.height);
+    c->setDepth(defaults.depth);
+    c->setDiffuse(defaults.diffuse);
+  }
   pushExportParams(pointIndex);
 }
 
@@ -835,7 +882,7 @@ void ReverbAudioProcessor::onSceneReceived(
   std::vector<std::string> ownIds;
   ownIds.reserve(kNumPoints);
   for (auto const& backend : pointBackends_)
-    ownIds.push_back(backend->getConnectionId().string());
+    if (backend) ownIds.push_back(backend->getConnectionId().string());
 
   std::vector<SourceObjectInfo> found;
   std::vector<UnsupportedInputInfo> foundDirectSpeakers;
@@ -914,6 +961,7 @@ juce::String ReverbAudioProcessor::getPointDisplayName(int pointIndex) const {
 void ReverbAudioProcessor::pushAllPointPropertiesToScene() {
   for (int i = 0; i < kNumPoints; ++i) {
     auto* c = pointConnectors_[static_cast<size_t>(i)].get();
+    if (!c) continue;
     c->setName(getPointDisplayName(i).toStdString());
     c->setColour(trackColour_.getARGB());
   }
@@ -957,10 +1005,12 @@ void ReverbAudioProcessor::getStateInformation(MemoryBlock& destData) {
   for (int i = 0; i < kNumPoints; ++i) {
     auto* p = pointsXml->createNewChildElement("Point");
     p->setAttribute("index", i);
-    p->setAttribute("connection_id",
-                    pointBackends_[static_cast<size_t>(i)]
-                        ->getConnectionId()
-                        .string());
+    p->setAttribute("active", pointActive_[static_cast<size_t>(i)]);
+    if (pointBackends_[static_cast<size_t>(i)])
+      p->setAttribute("connection_id",
+                      pointBackends_[static_cast<size_t>(i)]
+                          ->getConnectionId()
+                          .string());
     p->setAttribute("routing", pointRouting_[static_cast<size_t>(i)]);
 
     auto params = getPointParams(i);
@@ -1001,8 +1051,16 @@ void ReverbAudioProcessor::setStateInformation(const void* data,
     for (auto* p : pointsXml->getChildWithTagNameIterator("Point")) {
       int i = p->getIntAttribute("index", -1);
       if (i < 0 || i >= kNumPoints) continue;
+
+      bool active = p->getBoolAttribute("active", true);
+      pointActive_[static_cast<size_t>(i)] = active;
+      if (active)
+        buildPointConnector(i);
+      else
+        teardownPointConnector(i);
+
       auto idStr = p->getStringAttribute("connection_id", "").toStdString();
-      if (!idStr.empty()) {
+      if (!idStr.empty() && pointBackends_[static_cast<size_t>(i)]) {
         pointBackends_[static_cast<size_t>(i)]->setConnectionId(
             communication::ConnectionId{idStr});
       }
@@ -1036,6 +1094,92 @@ void ReverbAudioProcessor::setStateInformation(const void* data,
       setInputSlotSource(
           i, s->getStringAttribute("source_connection_id", "").toStdString());
     }
+  }
+}
+
+void ReverbAudioProcessor::sendPointOsc(int pointIndex) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  if (!oscOutputEnabled_) return;
+  bool active = getPointActive(pointIndex);
+  auto params = getPointParams(pointIndex);
+  juce::String base = "/point/" + juce::String(pointIndex);
+  oscSender_.send(base + "/active", active ? 1 : 0);
+  if (!active) return;
+  oscSender_.send(base + "/az", params.azimuthDeg);
+  oscSender_.send(base + "/el", params.elevationDeg);
+  oscSender_.send(base + "/dist", params.distance);
+}
+
+void ReverbAudioProcessor::reconnectOscOutputLocked() {
+  oscSender_.disconnect();
+  if (oscOutputEnabled_) oscSender_.connect(oscOutputIp_, oscOutputPort_);
+}
+
+void ReverbAudioProcessor::setOscOutputEnabled(bool enabled) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputEnabled_ = enabled;
+  reconnectOscOutputLocked();
+}
+
+void ReverbAudioProcessor::setOscOutputIp(const juce::String& ip) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputIp_ = ip;
+  reconnectOscOutputLocked();
+}
+
+void ReverbAudioProcessor::setOscOutputPort(int port) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputPort_ = port;
+  reconnectOscOutputLocked();
+}
+
+void ReverbAudioProcessor::setOscInputEnabled(bool enabled) {
+  if (enabled == oscInputEnabled_) return;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
+  oscInputEnabled_ = enabled;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().subscribe(oscInputPort_, &oscInputSubscriber_);
+}
+
+void ReverbAudioProcessor::setOscInputPort(int port) {
+  if (port == oscInputPort_) return;
+  bool wasEnabled = oscInputEnabled_;
+  if (wasEnabled)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
+  oscInputPort_ = port;
+  if (wasEnabled)
+    ear::plugin::OscPortRegistry::getInstance().subscribe(oscInputPort_, &oscInputSubscriber_);
+}
+
+// Same /point/<index>/{az,el,dist,active} scheme as Point Encoder's own
+// (point_encoder_plugin_processor.cpp) - here <index> is one of the 10
+// fixed "4+6+0" points (see buildPointLayout()), not a user-activated slot.
+void ReverbAudioProcessor::handleOscMessage(const juce::OSCMessage& message) {
+  auto addr = message.getAddressPattern().toString();
+  if (!addr.startsWith("/point/")) return;
+  auto rest = addr.substring(7);
+  int slash = rest.indexOf("/");
+  if (slash < 0) return;
+  int idx = rest.substring(0, slash).getIntValue();
+  juce::String field = rest.substring(slash + 1);
+  if (idx < 0 || idx >= kNumPoints) return;
+  if (message.size() < 1) return;
+  auto const& arg = message[0];
+
+  if (field == "az" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, arg.getFloat32(), params.elevationDeg, params.distance);
+  } else if (field == "el" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, params.azimuthDeg, arg.getFloat32(), params.distance);
+  } else if (field == "dist" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, params.azimuthDeg, params.elevationDeg, arg.getFloat32());
+  } else if (field == "active") {
+    bool active = arg.isInt32() ? (arg.getInt32() != 0)
+                                 : (arg.isFloat32() && arg.getFloat32() > 0.5f);
+    setPointActive(idx, active);
   }
 }
 

@@ -58,14 +58,19 @@ void ReverbSceneView::drawDot(juce::Graphics& g, float azimuthDeg,
 void ReverbSceneView::paint(juce::Graphics& g) {
   g.drawImageAt(cachedBackground_, 0, 0);
 
-  // The 9 output points: grey when unrouted (not yet sent to Scene), the
-  // host track's own colour once routed (same colour sent to Scene itself
-  // - see ReverbAudioProcessor::updateTrackProperties()), so this view and
+  // The 10 output points: dark grey when inactive (not registered with
+  // Scene at all - see ReverbAudioProcessor::setPointActive()), plain
+  // grey when active but unrouted, the host track's own colour once both
+  // active and routed (same colour sent to Scene itself - see
+  // ReverbAudioProcessor::updateTrackProperties()), so this view and
   // Scene's own coloured strip agree.
   for (int i = 0; i < ReverbAudioProcessor::kNumPoints; ++i) {
     auto params = p_->getPointParams(i);
+    bool active = p_->getPointActive(i);
     bool routed = p_->getPointRouting(i) >= 0;
-    auto colour = routed ? p_->getTrackColour() : juce::Colours::grey;
+    auto colour = !active ? juce::Colours::darkgrey
+                 : routed ? p_->getTrackColour()
+                          : juce::Colours::grey;
     drawDot(g, params.azimuthDeg, params.elevationDeg,
            juce::jlimit(0.0f, 1.0f, params.distance), colour);
   }

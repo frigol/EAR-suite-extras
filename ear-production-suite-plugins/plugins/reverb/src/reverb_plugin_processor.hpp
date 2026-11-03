@@ -17,6 +17,7 @@
 #include <daw_channel_count.h>
 #include "reaper_vst3_interfaces.h"
 #include "components/read_only_audio_parameter_int.hpp"
+#include "osc_port_registry.hpp"
 
 namespace ear {
 namespace plugin {
@@ -26,7 +27,7 @@ class MonitoringMetadataReceiver;
 }  // namespace plugin
 }  // namespace ear
 
-/** @brief "Reverb for EAR Suite" - Phase 2 (first real DSP).
+/** @brief "LF Reverb".
  *
  * Takes up to kMaxInputs mono sends (one per source EAR Object/Object OSC
  * being reverberated), listens to Scene's own broadcast (the same PUB
@@ -41,6 +42,18 @@ class MonitoringMetadataReceiver;
  * buildPointLayout()) - each independently registered with Scene as its
  * own ADM Object via its own ear::plugin::ObjectBackend connection, with
  * its own "Select Scene channel" routing.
+ *
+ * Each point has its own "Active" toggle, ON by default - exactly like
+ * every point being a real Scene Object has always worked. Turning a
+ * point's Active off unregisters it from Scene entirely (frees up one of
+ * REAPER's 128 routable channels / one Scene Object slot) without
+ * stopping its audio: the point's output channel keeps carrying the same
+ * direction-weighted signal regardless, so it can instead be routed into
+ * a "LF Multi-Encoder" instance - useful when several Reverb/
+ * IR Reverb instances in one session would otherwise need more Scene
+ * Objects/routed channels than are available; see that plugin's own class
+ * comment. Default stays ON so a fresh instance behaves exactly as before
+ * Point Encoder existed.
  *
  * DSP (see reverb_dsp.hpp): each point gets its own small early-reflection
  * generator (reverbdsp::EarlyReflections), fed not by the raw dry signal
@@ -61,8 +74,7 @@ class MonitoringMetadataReceiver;
  * editor (see setPointPosition() etc.) - the override is both what gets
  * sent to Scene AND what the DSP's own direction weighting above uses, so
  * moving a point's Object in Scene also moves where its early reflections
- * concentrate. Richer per-band/pre-delay reverb controls are Phase 4
- * (IRCAM-Verb-style parameters).
+ * concentrate.
  *
  * Input selection mirrors EAR Scene's own workflow: the editor shows a
  * checklist of every Object currently visible on Scene plus an "Add"
@@ -140,9 +152,8 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
     // Each of the 3 signal paths that can reach the 9 outputs - direct
     // (dry, unprocessed), early reflections and diffuse tail - has its
     // own enable switch and level. Direct defaults OFF: the dry object is
-    // already sent to Scene on its own channel (see the class comment),
-    // so direct here is only for auditioning/special routing, not the
-    // normal signal path.
+    // already sent to Scene on its own channel, so direct here is only
+    // for auditioning/special routing, not the normal signal path.
     bool directEnabled{false};
     float directLevel{1.0f};
     bool earlyEnabled{true};
@@ -268,6 +279,13 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   void setPointRouting(int pointIndex, int sceneChannel);
   int getPointRouting(int pointIndex) const;
 
+  // Whether this point is currently registered with Scene at all - ON by
+  // default for every point (see the class comment). Turning it off
+  // unregisters the point's ObjectBackend; the point's audio output keeps
+  // running either way.
+  void setPointActive(int pointIndex, bool active);
+  bool getPointActive(int pointIndex) const;
+
   // Object-style per-point parameters: default to the point's nominal ITU
   // direction, overridable afterwards exactly like a real EAR Object.
   PointParams getPointParams(int pointIndex) const;
@@ -315,6 +333,13 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   std::function<void()> onTrackNameChanged;
   juce::Colour getTrackColour() const { return trackColour_; }
 
+  // Whether the editor's "Output points" section is currently expanded -
+  // kept here (not in the editor) so it survives the editor being closed
+  // and reopened, not just the lifetime of one editor instance. Defaults
+  // to collapsed for a freshly created processor only.
+  bool getPointsExpanded() const { return pointsExpanded_; }
+  void setPointsExpanded(bool expanded) { pointsExpanded_ = expanded; }
+
   const std::array<PointInfo, kNumPoints>& getPointLayout() const {
     return pointInfo_;
   }
@@ -323,6 +348,20 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   // changes, so the editor can refresh its combo boxes/list without
   // polling.
   std::function<void()> onAvailableObjectsChanged;
+
+  // --- OSC output (reports each point's own position/active state) ---
+  bool getOscOutputEnabled() const { return oscOutputEnabled_; }
+  void setOscOutputEnabled(bool enabled);
+  juce::String getOscOutputIp() const { return oscOutputIp_; }
+  void setOscOutputIp(const juce::String& ip);
+  int getOscOutputPort() const { return oscOutputPort_; }
+  void setOscOutputPort(int port);
+
+  // --- OSC input (controls points remotely) ---------------------------
+  bool getOscInputEnabled() const { return oscInputEnabled_; }
+  void setOscInputEnabled(bool enabled);
+  int getOscInputPort() const { return oscInputPort_; }
+  void setOscInputPort(int port);
 
  private:
   void onSceneReceived(const ear::plugin::proto::SceneStore& store);
@@ -336,16 +375,20 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   // this same node written to its own standalone file.
   void writeDspXml(juce::XmlElement& dspXml) const;
   void applyDspXml(const juce::XmlElement& dspXml);
+  void buildPointConnector(int pointIndex);
+  void teardownPointConnector(int pointIndex);
 
   std::array<PointInfo, kNumPoints> pointInfo_;
   juce::String trackName_;
   juce::Colour trackColour_{juce::Colours::orange};
+  bool pointsExpanded_{false};
   void pushAllPointPropertiesToScene();
   void notifyTrackNameChangedOnMessageThread();
   std::array<std::unique_ptr<ear::plugin::ReverbPointConnector>, kNumPoints>
       pointConnectors_;
   std::array<std::unique_ptr<ear::plugin::ObjectBackend>, kNumPoints>
       pointBackends_;
+  std::array<bool, kNumPoints> pointActive_;
   std::array<int, kNumPoints> pointRouting_;
   std::array<PointParams, kNumPoints> pointParams_;
   mutable std::mutex pointParamsMutex_;
@@ -401,8 +444,8 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   // real Object/DirectSpeakers/HOA/Object OSC plugins use - and exposing
   // each as its own read-only VST3 parameter (reaper-adm-extension reads
   // these by raw parameter INDEX, not by name: see exportaction_admsource-
-  // earvst.h's paramReverbInstanceId array and isInputPlugin()'s "Reverb
-  // for EAR Suite" recognition). These must stay the ONLY addParameter()
+  // earvst.h's paramReverbInstanceId array and isInputPlugin()'s "LF
+  // Reverb" recognition). These must stay the ONLY addParameter()
   // calls in this processor, added in point order 0..9, so their indices
   // never shift.
   void setIHostApplication(Steinberg::FUnknown* unknown) override;
@@ -431,6 +474,33 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   };
   std::array<PointExportParams, kNumPoints> pointExportParams_{};
   void pushExportParams(int pointIndex);
+
+  // OSC output: sends /point/<index>/active, /az, /el, /dist whenever a
+  // point's own state/position changes - see Point Encoder's identical
+  // scheme (point_encoder_plugin_processor.hpp) for the full rationale.
+  void sendPointOsc(int pointIndex);
+  void reconnectOscOutputLocked();
+
+  bool oscOutputEnabled_{false};
+  juce::String oscOutputIp_{"127.0.0.1"};
+  int oscOutputPort_{9000};
+  juce::OSCSender oscSender_;
+  std::mutex oscSenderMutex_;
+
+  class OscInputSubscriber : public ear::plugin::OscPortRegistry::Subscriber {
+   public:
+    explicit OscInputSubscriber(ReverbAudioProcessor& owner) : owner_(owner) {}
+    void handleOscMessage(const juce::OSCMessage& message) override {
+      owner_.handleOscMessage(message);
+    }
+   private:
+    ReverbAudioProcessor& owner_;
+  };
+  void handleOscMessage(const juce::OSCMessage& message);
+
+  bool oscInputEnabled_{false};
+  int oscInputPort_{9001};
+  OscInputSubscriber oscInputSubscriber_{*this};
 
   // setOscDebugText()-style deferral to the message thread via a captured
   // weak_ptr to this flag, mirroring object_osc's own aliveFlag_: the Scene

@@ -51,9 +51,9 @@ add_juce_vst3_plugin(reverb
   SOURCES ${SOURCES_REVERB} ${HEADERS_REVERB}
   IDE_FOLDER ${IDE_FOLDER_PLUGINS}
   CODE_SUFFIX "21"
-  DISPLAY_NAME "Reverb for EAR Suite"
-  DESCRIPTION "Position-following spatial reverb: reverberates a selected EAR Object/Object OSC and sends 9 ITU 4+5+0 points to EAR Scene as independent objects. Not affiliated with or endorsed by EBU."
-  OUTPUT_NAME "Reverb for EAR Suite"
+  DISPLAY_NAME "LF Reverb"
+  DESCRIPTION "Position-following spatial reverb: reverberates a selected EAR Object/Object OSC and sends 10 points (4+6+0 layout) to EAR Scene as independent objects. Not affiliated with or endorsed by EBU."
+  OUTPUT_NAME "LF Reverb"
   MANUFACTURER_NAME "Luca Frigo"
   MANUFACTURER_WEBSITE "https://github.com/frigol/ear-suite-extras"
   MANUFACTURER_CODE "4C462020" # Hex for 'LF  '

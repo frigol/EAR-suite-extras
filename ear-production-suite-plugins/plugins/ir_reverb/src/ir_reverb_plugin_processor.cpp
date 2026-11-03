@@ -57,12 +57,13 @@ IrReverbAudioProcessor::IrReverbAudioProcessor()
              .withOutput("Output", AudioChannelSet::discreteChannels(kNumPoints), true)) {
   buildPointLayout();
   pointRouting_.fill(-1);
+  pointActive_.fill(true);  // every point is a live Scene Object by default
 
   // Same mechanism as the algorithmic Reverb's own instance-id + export
   // parameters (see that plugin's constructor comment and PointExportParams
   // in the header): reaper-adm-extension reads these by raw VST3 parameter
   // INDEX, not by name (see exportaction_admsource-earvst.h/.cpp's "IR
-  // Reverb for EAR Suite" recognition and its reverb point-parameter
+  // LF Reverb" recognition and its reverb point-parameter
   // layout). These must stay the ONLY addParameter() calls in this
   // processor, added in point order 0..9, so their indices never shift.
   for (int i = 0; i < kNumPoints; ++i) {
@@ -102,19 +103,7 @@ IrReverbAudioProcessor::IrReverbAudioProcessor()
     pointParams_[static_cast<size_t>(i)].elevationDeg =
         pointInfo_[static_cast<size_t>(i)].nominalElevationDeg;
 
-    pointConnectors_[i] = std::make_unique<IrReverbPointConnector>();
-    pointBackends_[i] =
-        std::make_unique<ObjectBackend>(pointConnectors_[i].get());
-    pointConnectors_[i]->setName(getPointDisplayName(i).toStdString());
-    pointConnectors_[i]->setColour(trackColour_.getARGB());
-    pointConnectors_[i]->setPosition(pointParams_[static_cast<size_t>(i)].azimuthDeg,
-                                     pointParams_[static_cast<size_t>(i)].elevationDeg,
-                                     pointParams_[static_cast<size_t>(i)].distance);
-    pointConnectors_[i]->setGain(pointParams_[static_cast<size_t>(i)].gain);
-    pointConnectors_[i]->setWidth(pointParams_[static_cast<size_t>(i)].width);
-    pointConnectors_[i]->setHeight(pointParams_[static_cast<size_t>(i)].height);
-    pointConnectors_[i]->setDepth(pointParams_[static_cast<size_t>(i)].depth);
-    pointConnectors_[i]->setDiffuse(pointParams_[static_cast<size_t>(i)].diffuse);
+    if (pointActive_[static_cast<size_t>(i)]) buildPointConnector(i);
     pushExportParams(i);
   }
 
@@ -134,15 +123,61 @@ void IrReverbAudioProcessor::setIHostApplication(Steinberg::FUnknown* unknown) {
   for (int i = 0; i < kNumPoints; ++i) {
     int id = static_cast<int>(requestInstanceIdFromExtension(reaperHost_));
     inputInstanceIdParams_[static_cast<size_t>(i)]->internalSetIntAndNotifyHost(id);
-    pointConnectors_[static_cast<size_t>(i)]->setInputInstanceId(id);
+    if (pointConnectors_[static_cast<size_t>(i)])
+      pointConnectors_[static_cast<size_t>(i)]->setInputInstanceId(id);
   }
 }
 
 IrReverbAudioProcessor::~IrReverbAudioProcessor() {
   *aliveFlag_ = false;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
   if (sceneMetadataReceiver_) sceneMetadataReceiver_->shutdown();
   sceneControlConnection_.onConnectionLost(nullptr);
   sceneControlConnection_.onConnectionEstablished(nullptr);
+}
+
+void IrReverbAudioProcessor::buildPointConnector(int pointIndex) {
+  auto idx = static_cast<size_t>(pointIndex);
+  if (pointConnectors_[idx]) return;  // already live
+  pointConnectors_[idx] = std::make_unique<IrReverbPointConnector>();
+  pointBackends_[idx] = std::make_unique<ObjectBackend>(pointConnectors_[idx].get());
+  pointConnectors_[idx]->setName(getPointDisplayName(pointIndex).toStdString());
+  pointConnectors_[idx]->setColour(trackColour_.getARGB());
+  pointConnectors_[idx]->setRouting(pointRouting_[idx]);
+  auto const& params = pointParams_[idx];
+  pointConnectors_[idx]->setPosition(params.azimuthDeg, params.elevationDeg,
+                                     params.distance);
+  pointConnectors_[idx]->setGain(params.gain);
+  pointConnectors_[idx]->setWidth(params.width);
+  pointConnectors_[idx]->setHeight(params.height);
+  pointConnectors_[idx]->setDepth(params.depth);
+  pointConnectors_[idx]->setDiffuse(params.diffuse);
+  if (reaperHost_)
+    pointConnectors_[idx]->setInputInstanceId(
+        inputInstanceIdParams_[idx]->get());
+}
+
+void IrReverbAudioProcessor::teardownPointConnector(int pointIndex) {
+  auto idx = static_cast<size_t>(pointIndex);
+  pointBackends_[idx].reset();
+  pointConnectors_[idx].reset();
+}
+
+void IrReverbAudioProcessor::setPointActive(int pointIndex, bool active) {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return;
+  auto idx = static_cast<size_t>(pointIndex);
+  pointActive_[idx] = active;
+  if (active)
+    buildPointConnector(pointIndex);
+  else
+    teardownPointConnector(pointIndex);
+  sendPointOsc(pointIndex);
+}
+
+bool IrReverbAudioProcessor::getPointActive(int pointIndex) const {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return false;
+  return pointActive_[static_cast<size_t>(pointIndex)];
 }
 
 void IrReverbAudioProcessor::buildPointLayout() {
@@ -210,21 +245,21 @@ bool IrReverbAudioProcessor::isBusesLayoutSupported(
 
 void IrReverbAudioProcessor::reloadMonoConvolutions() {
   // Called with dspMutex_ already held, or before audio starts.
+  juce::dsp::ProcessSpec spec{preparedSampleRate_,
+                             static_cast<juce::uint32>(preparedBlockSize_), 1};
   for (int i = 0; i < kNumPoints; ++i) {
+    convolutions_[static_cast<size_t>(i)].prepare(spec);
+    juce::AudioBuffer<float> mono(1, shapedIr_.getNumSamples());
+    mono.copyFrom(0, 0, shapedIr_, 0, 0, shapedIr_.getNumSamples());
     convolutions_[static_cast<size_t>(i)].loadImpulseResponse(
-        loadedIrFile_, juce::dsp::Convolution::Stereo::no,
-        juce::dsp::Convolution::Trim::no, 0,
-        juce::dsp::Convolution::Normalise::no);
+        std::move(mono), shapedIrSampleRate_, juce::dsp::Convolution::Stereo::no,
+        juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
   }
 }
 
-void IrReverbAudioProcessor::loadAmbisonicIr(juce::AudioFormatReader& reader,
-                                             int numChannels) {
-  // Called with dspMutex_ already held.
-  int numSamples = static_cast<int>(reader.lengthInSamples);
-  juce::AudioBuffer<float> full(numChannels, juce::jmax(1, numSamples));
-  reader.read(&full, 0, numSamples, 0, true, true);
-
+void IrReverbAudioProcessor::loadAmbisonicIr(int numChannels) {
+  // Called with dspMutex_ already held. Reads from shapedIr_ (already
+  // stretched/decayed/damped - see applyIrShaping()).
   ambiConvolutions_.clear();
   ambiPreDelay_.clear();
   ambiFeedBuffer_.assign(
@@ -240,10 +275,10 @@ void IrReverbAudioProcessor::loadAmbisonicIr(juce::AudioFormatReader& reader,
     auto conv = std::make_unique<juce::dsp::Convolution>();
     conv->prepare(spec);
 
-    juce::AudioBuffer<float> mono(1, full.getNumSamples());
-    mono.copyFrom(0, 0, full, ch, 0, full.getNumSamples());
+    juce::AudioBuffer<float> mono(1, shapedIr_.getNumSamples());
+    mono.copyFrom(0, 0, shapedIr_, ch, 0, shapedIr_.getNumSamples());
     conv->loadImpulseResponse(
-        std::move(mono), reader.sampleRate, juce::dsp::Convolution::Stereo::no,
+        std::move(mono), shapedIrSampleRate_, juce::dsp::Convolution::Stereo::no,
         juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
     ambiConvolutions_.push_back(std::move(conv));
 
@@ -254,12 +289,8 @@ void IrReverbAudioProcessor::loadAmbisonicIr(juce::AudioFormatReader& reader,
   }
 }
 
-void IrReverbAudioProcessor::loadStereoIr(juce::AudioFormatReader& reader) {
-  // Called with dspMutex_ already held.
-  int numSamples = static_cast<int>(reader.lengthInSamples);
-  juce::AudioBuffer<float> full(2, juce::jmax(1, numSamples));
-  reader.read(&full, 0, numSamples, 0, true, true);
-
+void IrReverbAudioProcessor::loadStereoIr() {
+  // Called with dspMutex_ already held. Reads from shapedIr_.
   juce::dsp::ProcessSpec spec{preparedSampleRate_,
                              static_cast<juce::uint32>(preparedBlockSize_), 1};
   for (int p = 0; p < kNumPoints; ++p) {
@@ -269,10 +300,10 @@ void IrReverbAudioProcessor::loadStereoIr(juce::AudioFormatReader& reader) {
     int channel = (az < -0.5f) ? 1 : (std::abs(az) > 179.5f ? 1 : 0);
 
     convolutions_[static_cast<size_t>(p)].prepare(spec);
-    juce::AudioBuffer<float> mono(1, full.getNumSamples());
-    mono.copyFrom(0, 0, full, channel, 0, full.getNumSamples());
+    juce::AudioBuffer<float> mono(1, shapedIr_.getNumSamples());
+    mono.copyFrom(0, 0, shapedIr_, channel, 0, shapedIr_.getNumSamples());
     convolutions_[static_cast<size_t>(p)].loadImpulseResponse(
-        std::move(mono), reader.sampleRate, juce::dsp::Convolution::Stereo::no,
+        std::move(mono), shapedIrSampleRate_, juce::dsp::Convolution::Stereo::no,
         juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
   }
 }
@@ -306,13 +337,8 @@ constexpr ArrayPoint kPcma3dPoints[9] = {
 };
 }  // namespace
 
-void IrReverbAudioProcessor::loadArrayIr(juce::AudioFormatReader& reader,
-                                         int numChannels) {
-  // Called with dspMutex_ already held.
-  int numSamples = static_cast<int>(reader.lengthInSamples);
-  juce::AudioBuffer<float> full(numChannels, juce::jmax(1, numSamples));
-  reader.read(&full, 0, numSamples, 0, true, true);
-
+void IrReverbAudioProcessor::loadArrayIr(int numChannels) {
+  // Called with dspMutex_ already held. Reads from shapedIr_.
   arrayConvolutions_.clear();
   arrayPreDelay_.clear();
   arrayFeedBuffer_.assign(
@@ -328,10 +354,10 @@ void IrReverbAudioProcessor::loadArrayIr(juce::AudioFormatReader& reader,
     auto conv = std::make_unique<juce::dsp::Convolution>();
     conv->prepare(spec);
 
-    juce::AudioBuffer<float> mono(1, full.getNumSamples());
-    mono.copyFrom(0, 0, full, ch, 0, full.getNumSamples());
+    juce::AudioBuffer<float> mono(1, shapedIr_.getNumSamples());
+    mono.copyFrom(0, 0, shapedIr_, ch, 0, shapedIr_.getNumSamples());
     conv->loadImpulseResponse(
-        std::move(mono), reader.sampleRate, juce::dsp::Convolution::Stereo::no,
+        std::move(mono), shapedIrSampleRate_, juce::dsp::Convolution::Stereo::no,
         juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
     arrayConvolutions_.push_back(std::move(conv));
 
@@ -343,8 +369,16 @@ void IrReverbAudioProcessor::loadArrayIr(juce::AudioFormatReader& reader,
 }
 
 void IrReverbAudioProcessor::decideModeAndLoad(juce::AudioFormatReader& reader) {
-  // Called with dspMutex_ already held.
+  // Called with dspMutex_ already held. Reads the whole file once into
+  // rawIr_ - everything downstream (mode decision's own channel count,
+  // and the actual convolutions, via rebuildConvolutionsFromShapedIr())
+  // works from that in-memory copy, not the reader, so Stretch/Decay/
+  // Damping changes later never need to re-touch the file.
   int numChannels = static_cast<int>(reader.numChannels);
+  int numSamples = static_cast<int>(reader.lengthInSamples);
+  rawIr_.setSize(numChannels, juce::jmax(1, numSamples), false, false, true);
+  reader.read(&rawIr_, 0, numSamples, 0, true, true);
+  rawIrSampleRate_ = reader.sampleRate;
 
   if (preferArrayInterpretation_ && numChannels == kNumPoints) {
     irMode_ = IrMode::Array;
@@ -354,34 +388,112 @@ void IrReverbAudioProcessor::decideModeAndLoad(juce::AudioFormatReader& reader) 
       arrayChannelDirections_.push_back(irreverbdsp::Direction::fromAzEl(
           pointInfo_[static_cast<size_t>(i)].nominalAzimuthDeg,
           pointInfo_[static_cast<size_t>(i)].nominalElevationDeg));
-    loadArrayIr(reader, numChannels);
-    return;
-  }
-  if (preferArrayInterpretation_ && numChannels == 9) {
+  } else if (preferArrayInterpretation_ && numChannels == 9) {
     irMode_ = IrMode::Array;
     arrayPresetName_ = "PCMA-3D (ITU-R BS.2051 \"4+5+0\")";
     arrayChannelDirections_.clear();
     for (auto const& pt : kPcma3dPoints)
       arrayChannelDirections_.push_back(
           irreverbdsp::Direction::fromAzEl(pt.az, pt.el));
-    loadArrayIr(reader, numChannels);
-    return;
+  } else {
+    int order = irreverbdsp::ambisonicOrderForChannelCount(numChannels);
+    if (order >= 1) {
+      irMode_ = IrMode::Ambisonic;
+      ambisonicOrder_ = order;
+    } else if (numChannels == 2) {
+      irMode_ = IrMode::Stereo;
+      ambisonicOrder_ = 0;
+    } else {
+      irMode_ = IrMode::Mono;
+      ambisonicOrder_ = 0;
+    }
   }
 
-  int order = irreverbdsp::ambisonicOrderForChannelCount(numChannels);
-  if (order >= 1) {
-    irMode_ = IrMode::Ambisonic;
-    ambisonicOrder_ = order;
-    loadAmbisonicIr(reader, numChannels);
-  } else if (numChannels == 2) {
-    irMode_ = IrMode::Stereo;
-    ambisonicOrder_ = 0;
-    loadStereoIr(reader);
-  } else {
-    irMode_ = IrMode::Mono;
-    ambisonicOrder_ = 0;
-    reloadMonoConvolutions();
+  rebuildConvolutionsFromShapedIr();
+}
+
+void IrReverbAudioProcessor::rebuildConvolutionsFromShapedIr() {
+  // Called with dspMutex_ already held.
+  if (rawIr_.getNumSamples() == 0) return;
+  applyIrShaping();
+  int numChannels = rawIr_.getNumChannels();
+  switch (irMode_) {
+    case IrMode::Array:
+      loadArrayIr(numChannels);
+      break;
+    case IrMode::Ambisonic:
+      loadAmbisonicIr(numChannels);
+      break;
+    case IrMode::Stereo:
+      loadStereoIr();
+      break;
+    case IrMode::Mono:
+      reloadMonoConvolutions();
+      break;
   }
+}
+
+void IrReverbAudioProcessor::applyIrShaping() {
+  // Called with dspMutex_ already held.
+  int numCh = rawIr_.getNumChannels();
+  int srcLen = rawIr_.getNumSamples();
+  double sr = rawIrSampleRate_ > 0.0 ? rawIrSampleRate_ : preparedSampleRate_;
+
+  // --- Stretch: resample by reading the source at 1/stretch speed, so
+  // stretch > 1 genuinely lengthens the buffer (and darkens its spectral
+  // content, same trade-off as any simple resample-based stretch - see
+  // IrShapeParams::stretch's own comment).
+  float stretch = juce::jlimit(0.25f, 4.0f, irShape_.stretch);
+  int dstLen = juce::jmax(1, static_cast<int>(std::lround(srcLen * stretch)));
+  shapedIr_.setSize(numCh, dstLen, false, false, true);
+  for (int ch = 0; ch < numCh; ++ch) {
+    const float* src = rawIr_.getReadPointer(ch);
+    float* dst = shapedIr_.getWritePointer(ch);
+    for (int n = 0; n < dstLen; ++n) {
+      float srcPosF = static_cast<float>(n) / stretch;
+      int i0 = static_cast<int>(srcPosF);
+      float frac = srcPosF - static_cast<float>(i0);
+      float s0 = (i0 >= 0 && i0 < srcLen) ? src[i0] : 0.0f;
+      float s1 = (i0 + 1 >= 0 && i0 + 1 < srcLen) ? src[i0 + 1] : 0.0f;
+      dst[n] = s0 + frac * (s1 - s0);
+    }
+  }
+
+  // --- Decay: exponential-fade trim, applied after stretch so it always
+  // acts on the final (possibly lengthened) duration. 1.0 leaves the
+  // buffer untouched (bit-exact) rather than applying a no-op envelope.
+  float decay = juce::jlimit(0.05f, 1.0f, irShape_.decay);
+  if (decay < 0.999f) {
+    double durationSeconds = dstLen / sr;
+    double tau = juce::jmax(0.01, decay * durationSeconds * 0.5);
+    for (int ch = 0; ch < numCh; ++ch) {
+      float* d = shapedIr_.getWritePointer(ch);
+      for (int n = 0; n < dstLen; ++n) {
+        double t = n / sr;
+        d[n] *= static_cast<float>(std::exp(-t / tau));
+      }
+    }
+  }
+
+  // --- Damping: a single one-pole lowpass across the whole shaped IR -
+  // same qualitative "HF absorption" role as the algorithmic Reverb's own
+  // Damping, just applied once at load time here instead of per-block.
+  float damping = juce::jlimit(0.0f, 1.0f, irShape_.damping);
+  if (damping > 0.001f) {
+    float cutoffHz = juce::jmap(damping, 0.0f, 1.0f, 18000.0f, 800.0f);
+    float a = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * cutoffHz /
+                              static_cast<float>(sr));
+    for (int ch = 0; ch < numCh; ++ch) {
+      float* d = shapedIr_.getWritePointer(ch);
+      float state = 0.0f;
+      for (int n = 0; n < dstLen; ++n) {
+        state += a * (d[n] - state);
+        d[n] = state;
+      }
+    }
+  }
+
+  shapedIrSampleRate_ = sr;
 }
 
 void IrReverbAudioProcessor::setPreferArrayInterpretation(bool prefer) {
@@ -631,7 +743,8 @@ void IrReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
   for (int outCh = kNumPoints; outCh < buffer.getNumChannels(); ++outCh)
     buffer.clear(outCh, 0, numSamples);
 
-  for (auto const& backend : pointBackends_) backend->triggerMetadataSend();
+  for (auto const& backend : pointBackends_)
+    if (backend) backend->triggerMetadataSend();
 }
 
 AudioProcessorEditor* IrReverbAudioProcessor::createEditor() {
@@ -754,22 +867,23 @@ IrReverbAudioProcessor::getInputSlotInfo(int slotIndex) const {
   return inputSlots_[static_cast<size_t>(slotIndex)];
 }
 
-void IrReverbAudioProcessor::setPointRouting(int pointIndex, int sceneChannel) {
-  if (pointIndex < 0 || pointIndex >= kNumPoints) return;
-  pointRouting_[static_cast<size_t>(pointIndex)] = sceneChannel;
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setRouting(sceneChannel);
-}
-
-int IrReverbAudioProcessor::getPointRouting(int pointIndex) const {
-  if (pointIndex < 0 || pointIndex >= kNumPoints) return -1;
-  return pointRouting_[static_cast<size_t>(pointIndex)];
-}
-
 IrReverbAudioProcessor::PointParams IrReverbAudioProcessor::getPointParams(
     int pointIndex) const {
   if (pointIndex < 0 || pointIndex >= kNumPoints) return {};
   std::lock_guard<std::mutex> lock(pointParamsMutex_);
   return pointParams_[static_cast<size_t>(pointIndex)];
+}
+
+void IrReverbAudioProcessor::setPointRouting(int pointIndex, int sceneChannel) {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return;
+  pointRouting_[static_cast<size_t>(pointIndex)] = sceneChannel;
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setRouting(sceneChannel);
+}
+
+int IrReverbAudioProcessor::getPointRouting(int pointIndex) const {
+  if (pointIndex < 0 || pointIndex >= kNumPoints) return -1;
+  return pointRouting_[static_cast<size_t>(pointIndex)];
 }
 
 void IrReverbAudioProcessor::pushExportParams(int pointIndex) {
@@ -799,9 +913,10 @@ void IrReverbAudioProcessor::setPointPosition(int pointIndex, float azimuthDeg,
     params.elevationDeg = elevationDeg;
     params.distance = juce::jmax(0.0f, distance);
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setPosition(
-      azimuthDeg, elevationDeg, juce::jmax(0.0f, distance));
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setPosition(azimuthDeg, elevationDeg, juce::jmax(0.0f, distance));
   pushExportParams(pointIndex);
+  sendPointOsc(pointIndex);
 }
 
 void IrReverbAudioProcessor::setPointGain(int pointIndex, float linearGain) {
@@ -810,7 +925,8 @@ void IrReverbAudioProcessor::setPointGain(int pointIndex, float linearGain) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].gain = linearGain;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setGain(linearGain);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setGain(linearGain);
   pushExportParams(pointIndex);
 }
 
@@ -820,7 +936,8 @@ void IrReverbAudioProcessor::setPointWidth(int pointIndex, float width) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].width = width;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setWidth(width);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setWidth(width);
   pushExportParams(pointIndex);
 }
 
@@ -830,7 +947,8 @@ void IrReverbAudioProcessor::setPointHeight(int pointIndex, float height) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].height = height;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setHeight(height);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setHeight(height);
   pushExportParams(pointIndex);
 }
 
@@ -840,7 +958,8 @@ void IrReverbAudioProcessor::setPointDepth(int pointIndex, float depth) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].depth = depth;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setDepth(depth);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setDepth(depth);
   pushExportParams(pointIndex);
 }
 
@@ -850,7 +969,8 @@ void IrReverbAudioProcessor::setPointDiffuse(int pointIndex, float diffuse) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)].diffuse = diffuse;
   }
-  pointConnectors_[static_cast<size_t>(pointIndex)]->setDiffuse(diffuse);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get())
+    c->setDiffuse(diffuse);
   pushExportParams(pointIndex);
 }
 
@@ -863,13 +983,14 @@ void IrReverbAudioProcessor::resetPointToNominal(int pointIndex) {
     std::lock_guard<std::mutex> lock(pointParamsMutex_);
     pointParams_[static_cast<size_t>(pointIndex)] = defaults;
   }
-  auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get();
-  c->setPosition(defaults.azimuthDeg, defaults.elevationDeg, defaults.distance);
-  c->setGain(defaults.gain);
-  c->setWidth(defaults.width);
-  c->setHeight(defaults.height);
-  c->setDepth(defaults.depth);
-  c->setDiffuse(defaults.diffuse);
+  if (auto* c = pointConnectors_[static_cast<size_t>(pointIndex)].get()) {
+    c->setPosition(defaults.azimuthDeg, defaults.elevationDeg, defaults.distance);
+    c->setGain(defaults.gain);
+    c->setWidth(defaults.width);
+    c->setHeight(defaults.height);
+    c->setDepth(defaults.depth);
+    c->setDiffuse(defaults.diffuse);
+  }
   pushExportParams(pointIndex);
 }
 
@@ -943,15 +1064,48 @@ void IrReverbAudioProcessor::setPreDelayMs(float ms) {
   for (auto& line : arrayPreDelay_) line.setDelayMs(preDelayMs_);
 }
 
+IrReverbAudioProcessor::IrShapeParams
+IrReverbAudioProcessor::getIrShapeParams() const {
+  std::lock_guard<std::mutex> lock(dspMutex_);
+  return irShape_;
+}
+
+void IrReverbAudioProcessor::setIrStretch(float stretch) {
+  std::lock_guard<std::mutex> lock(dspMutex_);
+  irShape_.stretch = juce::jlimit(0.25f, 4.0f, stretch);
+  rebuildConvolutionsFromShapedIr();
+}
+
+void IrReverbAudioProcessor::setIrDecay(float decay) {
+  std::lock_guard<std::mutex> lock(dspMutex_);
+  irShape_.decay = juce::jlimit(0.05f, 1.0f, decay);
+  rebuildConvolutionsFromShapedIr();
+}
+
+void IrReverbAudioProcessor::setIrDamping(float damping) {
+  std::lock_guard<std::mutex> lock(dspMutex_);
+  irShape_.damping = juce::jlimit(0.0f, 1.0f, damping);
+  rebuildConvolutionsFromShapedIr();
+}
+
 void IrReverbAudioProcessor::writeDspXml(juce::XmlElement& dspXml) const {
   dspXml.setAttribute("wet_level", static_cast<double>(getWetLevel()));
   dspXml.setAttribute("pre_delay_ms", static_cast<double>(getPreDelayMs()));
+  auto shape = getIrShapeParams();
+  dspXml.setAttribute("ir_stretch", static_cast<double>(shape.stretch));
+  dspXml.setAttribute("ir_decay", static_cast<double>(shape.decay));
+  dspXml.setAttribute("ir_damping", static_cast<double>(shape.damping));
 }
 
 void IrReverbAudioProcessor::applyDspXml(const juce::XmlElement& dspXml) {
   setWetLevel(static_cast<float>(dspXml.getDoubleAttribute("wet_level", 1.0)));
   setPreDelayMs(
       static_cast<float>(dspXml.getDoubleAttribute("pre_delay_ms", 0.0)));
+  setIrStretch(
+      static_cast<float>(dspXml.getDoubleAttribute("ir_stretch", 1.0)));
+  setIrDecay(static_cast<float>(dspXml.getDoubleAttribute("ir_decay", 1.0)));
+  setIrDamping(
+      static_cast<float>(dspXml.getDoubleAttribute("ir_damping", 0.0)));
 }
 
 juce::File IrReverbAudioProcessor::getPresetsDirectory() {
@@ -1014,10 +1168,13 @@ void IrReverbAudioProcessor::onSceneControlConnectionLost() {
 
 void IrReverbAudioProcessor::onSceneReceived(
     const ear::plugin::proto::SceneStore& store) {
+  // Build the set of this plugin's own point connection ids, so they're
+  // excluded from the "objects available to reverberate" list once they
+  // themselves become visible to Scene.
   std::vector<std::string> ownIds;
   ownIds.reserve(kNumPoints);
   for (auto const& backend : pointBackends_)
-    ownIds.push_back(backend->getConnectionId().string());
+    if (backend) ownIds.push_back(backend->getConnectionId().string());
 
   std::vector<SourceObjectInfo> found;
   std::vector<UnsupportedInputInfo> foundDirectSpeakers;
@@ -1089,6 +1246,7 @@ juce::String IrReverbAudioProcessor::getPointDisplayName(int pointIndex) const {
 void IrReverbAudioProcessor::pushAllPointPropertiesToScene() {
   for (int i = 0; i < kNumPoints; ++i) {
     auto* c = pointConnectors_[static_cast<size_t>(i)].get();
+    if (!c) continue;
     c->setName(getPointDisplayName(i).toStdString());
     c->setColour(trackColour_.getARGB());
   }
@@ -1126,10 +1284,12 @@ void IrReverbAudioProcessor::getStateInformation(MemoryBlock& destData) {
   for (int i = 0; i < kNumPoints; ++i) {
     auto* p = pointsXml->createNewChildElement("Point");
     p->setAttribute("index", i);
-    p->setAttribute("connection_id",
-                    pointBackends_[static_cast<size_t>(i)]
-                        ->getConnectionId()
-                        .string());
+    p->setAttribute("active", pointActive_[static_cast<size_t>(i)]);
+    if (pointBackends_[static_cast<size_t>(i)])
+      p->setAttribute("connection_id",
+                      pointBackends_[static_cast<size_t>(i)]
+                          ->getConnectionId()
+                          .string());
     p->setAttribute("routing", pointRouting_[static_cast<size_t>(i)]);
 
     auto params = getPointParams(i);
@@ -1172,10 +1332,19 @@ void IrReverbAudioProcessor::setStateInformation(const void* data,
     for (auto* p : pointsXml->getChildWithTagNameIterator("Point")) {
       int i = p->getIntAttribute("index", -1);
       if (i < 0 || i >= kNumPoints) continue;
+
+      bool active = p->getBoolAttribute("active", true);
+      pointActive_[static_cast<size_t>(i)] = active;
+      if (active)
+        buildPointConnector(i);
+      else
+        teardownPointConnector(i);
+
       auto idStr = p->getStringAttribute("connection_id", "").toStdString();
-      if (!idStr.empty())
+      if (!idStr.empty() && pointBackends_[static_cast<size_t>(i)]) {
         pointBackends_[static_cast<size_t>(i)]->setConnectionId(
             communication::ConnectionId{idStr});
+      }
       setPointRouting(i, p->getIntAttribute("routing", -1));
 
       float az = static_cast<float>(p->getDoubleAttribute(
@@ -1211,6 +1380,89 @@ void IrReverbAudioProcessor::setStateInformation(const void* data,
       setInputSlotSource(
           i, s->getStringAttribute("source_connection_id", "").toStdString());
     }
+  }
+}
+
+void IrReverbAudioProcessor::sendPointOsc(int pointIndex) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  if (!oscOutputEnabled_) return;
+  bool active = getPointActive(pointIndex);
+  auto params = getPointParams(pointIndex);
+  juce::String base = "/point/" + juce::String(pointIndex);
+  oscSender_.send(base + "/active", active ? 1 : 0);
+  if (!active) return;
+  oscSender_.send(base + "/az", params.azimuthDeg);
+  oscSender_.send(base + "/el", params.elevationDeg);
+  oscSender_.send(base + "/dist", params.distance);
+}
+
+void IrReverbAudioProcessor::reconnectOscOutputLocked() {
+  oscSender_.disconnect();
+  if (oscOutputEnabled_) oscSender_.connect(oscOutputIp_, oscOutputPort_);
+}
+
+void IrReverbAudioProcessor::setOscOutputEnabled(bool enabled) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputEnabled_ = enabled;
+  reconnectOscOutputLocked();
+}
+
+void IrReverbAudioProcessor::setOscOutputIp(const juce::String& ip) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputIp_ = ip;
+  reconnectOscOutputLocked();
+}
+
+void IrReverbAudioProcessor::setOscOutputPort(int port) {
+  std::lock_guard<std::mutex> lock(oscSenderMutex_);
+  oscOutputPort_ = port;
+  reconnectOscOutputLocked();
+}
+
+void IrReverbAudioProcessor::setOscInputEnabled(bool enabled) {
+  if (enabled == oscInputEnabled_) return;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
+  oscInputEnabled_ = enabled;
+  if (oscInputEnabled_)
+    ear::plugin::OscPortRegistry::getInstance().subscribe(oscInputPort_, &oscInputSubscriber_);
+}
+
+void IrReverbAudioProcessor::setOscInputPort(int port) {
+  if (port == oscInputPort_) return;
+  bool wasEnabled = oscInputEnabled_;
+  if (wasEnabled)
+    ear::plugin::OscPortRegistry::getInstance().unsubscribe(oscInputPort_, &oscInputSubscriber_);
+  oscInputPort_ = port;
+  if (wasEnabled)
+    ear::plugin::OscPortRegistry::getInstance().subscribe(oscInputPort_, &oscInputSubscriber_);
+}
+
+void IrReverbAudioProcessor::handleOscMessage(const juce::OSCMessage& message) {
+  auto addr = message.getAddressPattern().toString();
+  if (!addr.startsWith("/point/")) return;
+  auto rest = addr.substring(7);
+  int slash = rest.indexOf("/");
+  if (slash < 0) return;
+  int idx = rest.substring(0, slash).getIntValue();
+  juce::String field = rest.substring(slash + 1);
+  if (idx < 0 || idx >= kNumPoints) return;
+  if (message.size() < 1) return;
+  auto const& arg = message[0];
+
+  if (field == "az" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, arg.getFloat32(), params.elevationDeg, params.distance);
+  } else if (field == "el" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, params.azimuthDeg, arg.getFloat32(), params.distance);
+  } else if (field == "dist" && arg.isFloat32()) {
+    auto params = getPointParams(idx);
+    setPointPosition(idx, params.azimuthDeg, params.elevationDeg, arg.getFloat32());
+  } else if (field == "active") {
+    bool active = arg.isInt32() ? (arg.getInt32() != 0)
+                                 : (arg.isFloat32() && arg.getFloat32() > 0.5f);
+    setPointActive(idx, active);
   }
 }
 

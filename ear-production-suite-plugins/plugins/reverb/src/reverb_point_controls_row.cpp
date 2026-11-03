@@ -9,8 +9,34 @@ void setupSlider(juce::Slider& s, double min, double max, double step,
                  double initial) {
   s.setSliderStyle(juce::Slider::LinearHorizontal);
   s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 56, 16);
+  s.setScrollWheelEnabled(false);  // click-and-drag only - the mouse wheel
+                                   // should scroll the surrounding list,
+                                   // not nudge whatever slider is under it
   s.setRange(min, max, step);
   s.setValue(initial, juce::dontSendNotification);
+}
+
+// Wires a small numeric TextEditor so typing a channel number and pressing
+// Enter (or clicking away) jumps `combo` straight to the matching item,
+// instead of scrolling a long list - numberToId translates the typed,
+// 1-indexed channel number into combo's own item-ID scheme (every combo
+// here offsets IDs slightly differently, e.g. a leading "(none)" entry).
+// setSelectedId(..., sendNotification) re-fires combo's own onChange, so
+// this reuses whatever side effects are already wired there.
+void setupChannelJumpField(juce::TextEditor& field, juce::ComboBox& combo,
+                           std::function<int(int)> numberToId) {
+  field.setInputRestrictions(3, "0123456789");
+  field.setTextToShowWhenEmpty("#", juce::Colours::grey);
+  field.setJustification(juce::Justification::centred);
+  field.setTooltip("Type a channel number and press Enter to jump straight to it.");
+  auto jump = [&field, &combo, numberToId] {
+    if (field.getText().isEmpty()) return;
+    int id = numberToId(field.getText().getIntValue());
+    if (id > 0) combo.setSelectedId(id, juce::sendNotification);
+    field.clear();
+  };
+  field.onReturnKey = jump;
+  field.onFocusLost = jump;
 }
 }  // namespace
 
@@ -20,6 +46,19 @@ ReverbPointControlsRow::ReverbPointControlsRow(ReverbAudioProcessor* p,
   auto const& layout = p_->getPointLayout();
   auto const& pt = layout[static_cast<size_t>(index_)];
   auto params = p_->getPointParams(index_);
+
+  activeToggle_.setToggleState(p_->getPointActive(index_), juce::dontSendNotification);
+  activeToggle_.setTooltip(
+      "Whether this point is currently registered with EAR Scene as its "
+      "own Object. Off by default only if you need to free up one of "
+      "REAPER's routable channels/Scene Objects - the point's audio "
+      "output keeps running either way, so it can be routed into an "
+      "LF Multi-Encoder instance instead.");
+  activeToggle_.onClick = [this] {
+    p_->setPointActive(index_, activeToggle_.getToggleState());
+    if (onChanged) onChanged();
+  };
+  addAndMakeVisible(activeToggle_);
 
   addAndMakeVisible(nameLabel_);
   refreshName();
@@ -36,10 +75,15 @@ ReverbPointControlsRow::ReverbPointControlsRow(ReverbAudioProcessor* p,
     if (onChanged) onChanged();
   };
   addAndMakeVisible(routingCombo_);
+  setupChannelJumpField(routingJumpField_, routingCombo_,
+                        [](int n) { return (n >= 1 && n <= MAX_DAW_CHANNELS) ? n + 1 : -1; });
+  addAndMakeVisible(routingJumpField_);
 
   setupSlider(azSlider_, -180.0, 180.0, 1.0, params.azimuthDeg);
   azSlider_.setDoubleClickReturnValue(true, pt.nominalAzimuthDeg);
-  azSlider_.setTooltip("Azimuth in degrees (-180 to 180, 0 = front). Double-click to reset.");
+  azSlider_.setTooltip(
+      "Azimuth in degrees (-180 to 180, 0 = front, positive = left). "
+      "Double-click to reset.");
   azSlider_.onValueChange = [this] {
     auto cur = p_->getPointParams(index_);
     p_->setPointPosition(index_, static_cast<float>(azSlider_.getValue()),
@@ -108,7 +152,7 @@ ReverbPointControlsRow::ReverbPointControlsRow(ReverbAudioProcessor* p,
     p_->setPointDiffuse(index_, static_cast<float>(diffuseSlider_.getValue()));
   };
 
-  for (auto* slider : {&azSlider_, &elSlider_, &distSlider_, &gainSlider_,
+  for (juce::Slider* slider : {static_cast<juce::Slider*>(&azSlider_), &elSlider_, &distSlider_, &gainSlider_,
                        &widthSlider_, &heightSlider_, &depthSlider_,
                        &diffuseSlider_})
     addAndMakeVisible(*slider);
@@ -120,7 +164,7 @@ ReverbPointControlsRow::ReverbPointControlsRow(ReverbAudioProcessor* p,
   };
   addAndMakeVisible(resetButton_);
 
-  setSize(1100, kPreferredHeight);
+  setSize(1150, kPreferredHeight);
 }
 
 void ReverbPointControlsRow::refreshName() {
@@ -133,6 +177,10 @@ void ReverbPointControlsRow::refreshName() {
 }
 
 void ReverbPointControlsRow::refreshFromProcessor() {
+  activeToggle_.setToggleState(p_->getPointActive(index_), juce::dontSendNotification);
+  int currentRouting = p_->getPointRouting(index_);
+  routingCombo_.setSelectedId(currentRouting < 0 ? 1 : currentRouting + 2,
+                              juce::dontSendNotification);
   auto params = p_->getPointParams(index_);
   azSlider_.setValue(params.azimuthDeg, juce::dontSendNotification);
   elSlider_.setValue(params.elevationDeg, juce::dontSendNotification);
@@ -154,12 +202,16 @@ void ReverbPointControlsRow::paint(juce::Graphics& g) {
 void ReverbPointControlsRow::resized() {
   auto area = getLocalBounds();
   auto topRow = area.removeFromTop(kTopRowHeight);
+  activeToggle_.setBounds(topRow.removeFromLeft(kActiveWidth));
+  topRow.removeFromLeft(4);
   nameLabel_.setBounds(topRow.removeFromLeft(kNameWidth));
   topRow.removeFromLeft(8);
   routingCombo_.setBounds(topRow.removeFromLeft(kRoutingWidth));
+  topRow.removeFromLeft(4);
+  routingJumpField_.setBounds(topRow.removeFromLeft(kJumpWidth));
 
   auto bottomRow = area.removeFromTop(kSliderRowHeight);
-  for (auto* slider : {&azSlider_, &elSlider_, &distSlider_, &gainSlider_,
+  for (juce::Slider* slider : {static_cast<juce::Slider*>(&azSlider_), &elSlider_, &distSlider_, &gainSlider_,
                        &widthSlider_, &heightSlider_, &depthSlider_,
                        &diffuseSlider_}) {
     slider->setBounds(bottomRow.removeFromLeft(kColumnWidth));

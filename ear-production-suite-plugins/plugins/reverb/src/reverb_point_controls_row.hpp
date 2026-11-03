@@ -4,8 +4,9 @@
 #include "reverb_plugin_processor.hpp"
 #include <memory>
 
-/** @brief One output point's full control row: the routing selector plus
- * every Object-style parameter (position, gain, width/height/depth,
+/** @brief One output point's full control row: an Active toggle (default
+ * ON - see ReverbAudioProcessor's class comment), the routing selector,
+ * and every Object-style parameter (position, gain, width/height/depth,
  * diffuse) - the same parameters a real EAR Object exposes - so each of
  * the 10 points can be adjusted afterwards exactly like a normal Object,
  * not just routed. Values default to the point's nominal direction and
@@ -23,6 +24,24 @@
  * Painted with alternating-row shading (even/odd by point index) so a
  * value can be tracked back to its row at a glance.
  */
+// A LinearHorizontal slider with its minimum at the right edge and
+// maximum at the left, instead of a plain slider's own left=min/
+// right=max - ITU/ADM convention has positive azimuth to the left
+// (anticlockwise), so this makes dragging left visually increase the
+// value and dragging right decrease it, matching that convention rather
+// than fighting it. juce::Slider::valueToProportionOfLength()/
+// proportionOfLengthToValue() are virtual methods meant to be overridden
+// exactly like this (not assignable std::function members).
+class AzimuthSlider : public juce::Slider {
+ public:
+  double valueToProportionOfLength(double value) override {
+    return (getMaximum() - value) / (getMaximum() - getMinimum());
+  }
+  double proportionOfLengthToValue(double proportion) override {
+    return getMaximum() - proportion * (getMaximum() - getMinimum());
+  }
+};
+
 class ReverbPointControlsRow : public juce::Component {
  public:
   ReverbPointControlsRow(ReverbAudioProcessor* p, int pointIndex);
@@ -37,8 +56,10 @@ class ReverbPointControlsRow : public juce::Component {
   // Column x-offsets/width shared with the editor's header row, so the
   // header's titles line up exactly with these sliders regardless of
   // window width.
+  static constexpr int kActiveWidth = 60;
   static constexpr int kNameWidth = 150;
   static constexpr int kRoutingWidth = 150;
+  static constexpr int kJumpWidth = 34;
   static constexpr int kColumnWidth = 82;
   static constexpr int kColumnGap = 4;
   static constexpr int kNumColumns = 8;  // Az El Dist Gain W H D Diff
@@ -53,16 +74,25 @@ class ReverbPointControlsRow : public juce::Component {
   // ReverbAudioProcessor::onTrackNameChanged).
   void refreshName();
 
- private:
+  // Re-reads every parameter (including routing) from the processor -
+  // called after construction's reset button, and by the editor after a
+  // bulk output-channel assignment (see ReverbAudioProcessorEditor's own
+  // "Assign range..." control) changes routing out from under this row.
   void refreshFromProcessor();
 
+ private:
   ReverbAudioProcessor* p_;
   int index_;
 
+  juce::ToggleButton activeToggle_{"Active"};
   juce::Label nameLabel_;
   juce::ComboBox routingCombo_;
+  // Type a channel number here and press Enter to jump routingCombo_
+  // straight to it, instead of scrolling a 128-entry list - see
+  // setupChannelJumpField() in the .cpp.
+  juce::TextEditor routingJumpField_;
 
-  juce::Slider azSlider_;
+  AzimuthSlider azSlider_;
   juce::Slider elSlider_;
   juce::Slider distSlider_;
   juce::Slider gainSlider_;

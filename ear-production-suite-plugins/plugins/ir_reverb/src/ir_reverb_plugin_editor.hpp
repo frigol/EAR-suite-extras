@@ -76,19 +76,61 @@ class IrReverbAudioProcessorEditor : public juce::AudioProcessorEditor {
   juce::ComboBox irCombo_;
   juce::Label irChannelsWarning_;
   juce::ToggleButton preferArrayToggle_{"Interpret 9/10ch as array (PCMA-3D / direct), not AmbiX"};
+
+  // "Levels & IR Shaping" sub-panel, same titled-box/compact-row visual
+  // language as the algorithmic Reverb's own Mix/Decay & Diffusion
+  // sub-panels (label + fixed-width slider + its own value readout,
+  // kDspSubRowHeight-tall rows) - a full-width slider in a 24px row (the
+  // Impulse Response panel's own plain rows) doesn't leave room for the
+  // slider's value text box underneath, which read as "barely legible"
+  // (see ReverbPointControlsRow's own column layout for the pattern this
+  // copies).
+  std::unique_ptr<juce::Component> shapingPanel_;
+  juce::Label shapingHeading_{{}, "Levels & IR Shaping"};
   juce::Label wetLabel_{{}, "Wet level"};
   juce::Slider wetSlider_;
   juce::Label preDelayLabel_{{}, "Pre-delay (ms)"};
   juce::Slider preDelaySlider_;
+  // Alters the loaded impulse response itself before convolution - see
+  // IrReverbAudioProcessor::IrShapeParams.
+  juce::Label stretchLabel_{{}, "Stretch"};
+  juce::Slider stretchSlider_;
+  juce::Label decayLabel_{{}, "Decay"};
+  juce::Slider decaySlider_;
+  juce::Label dampingLabel_{{}, "Damping"};
+  juce::Slider dampingSlider_;
 
   juce::Label pointsHeading_{{}, "Output points"};
   juce::TextButton collapseAllButton_;
-  bool allExpanded_{true};
+  bool allExpanded_{false};
   std::unique_ptr<juce::Component> pointsColumnHeader_;
   std::array<std::unique_ptr<IrReverbPointControlsRow>, IrReverbAudioProcessor::kNumPoints>
       pointRows_;
 
+  // Assigns all kNumPoints points' routing at once to a contiguous block
+  // of MAX_DAW_CHANNELS - see the algorithmic Reverb's own identical
+  // control (reverb_plugin_editor.hpp) for the full explanation.
+  juce::Label bulkRoutingLabel_{{}, "Assign output channels"};
+  juce::ComboBox bulkRoutingCombo_;
+  juce::TextEditor bulkRoutingJumpField_;
+
   std::unique_ptr<juce::FileChooser> fileChooser_;
+
+  // --- Output/Input OSC (both collapsed by default) - see Point
+  // Encoder's identical sections (point_encoder_plugin_editor.hpp).
+  juce::TextButton oscOutputHeaderButton_;
+  bool oscOutputExpanded_{false};
+  juce::ToggleButton oscOutputEnableToggle_{"Enabled"};
+  juce::Label oscOutputIpLabel_{{}, "IP"};
+  juce::TextEditor oscOutputIpEditor_;
+  juce::Label oscOutputPortLabel_{{}, "Port"};
+  juce::TextEditor oscOutputPortEditor_;
+
+  juce::TextButton oscInputHeaderButton_;
+  bool oscInputExpanded_{false};
+  juce::ToggleButton oscInputEnableToggle_{"Enabled"};
+  juce::Label oscInputPortLabel_{{}, "Port"};
+  juce::TextEditor oscInputPortEditor_;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IrReverbAudioProcessorEditor)
 };
