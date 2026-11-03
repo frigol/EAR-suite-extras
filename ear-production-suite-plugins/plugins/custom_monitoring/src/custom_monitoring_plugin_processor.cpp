@@ -11,7 +11,9 @@
 #include "monitoring_audio_processor.hpp"
 #include "monitoring_backend.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 
 namespace ear {
 namespace plugin {
@@ -38,6 +40,11 @@ namespace {
 // Used until the user loads a real layout, so the plugin is usable
 // immediately after being inserted.
 ear::Layout defaultLayout() { return ear::getLayout("0+2+0"); }
+
+// Dry air, ~20C - near enough for a delay-compensation estimate; a few
+// degrees' error moves the result by well under a sample at any plausible
+// room size.
+constexpr double kSpeedOfSoundMetresPerSecond = 343.0;
 }  // namespace
 
 void EarCustomMonitoringAudioProcessor::setIHostApplication(
@@ -112,6 +119,7 @@ void EarCustomMonitoringAudioProcessor::prepareToPlay(double sampleRate,
   configureProcessor(newConfig);
   samplerate_ = static_cast<int>(sampleRate);
   levelMeter_->setup(newConfig.layout.channels().size(), sampleRate);
+  updateDelayLines();
 }
 
 void EarCustomMonitoringAudioProcessor::releaseResources() {
@@ -169,6 +177,22 @@ void EarCustomMonitoringAudioProcessor::processBlock(
       gains.diffuse.row(r) *= g;
     }
     processor_->process(buffer, buffer, gains.direct, gains.diffuse);
+
+    // Per-channel distance delay compensation (see distanceDelaySeconds_) -
+    // a no-op pass-through on any channel whose delay line was set to 0
+    // samples, which is every channel when the loaded layout's speakers are
+    // all at the same distance.
+    auto delayChannels = static_cast<int>(
+        std::min<std::size_t>(delayLines_.size(),
+                              static_cast<std::size_t>(buffer.getNumChannels())));
+    for (int ch = 0; ch < delayChannels; ++ch) {
+      auto* data = buffer.getWritePointer(ch);
+      auto& line = delayLines_[static_cast<std::size_t>(ch)];
+      for (int n = 0; n < buffer.getNumSamples(); ++n) {
+        line.pushSample(0, data[n]);
+        data[n] = line.popSample(0);
+      }
+    }
   }
   int numOutputChannels = numOutputChannels_;
   processingLock.unlock();
@@ -248,6 +272,29 @@ void EarCustomMonitoringAudioProcessor::applyLayout(
                             ? std::vector<double>(newOutputChannels, 1.0)
                             : std::move(outputGains);
 
+  // Distance calibration: attenuate/delay every speaker as if it were at the
+  // layout's single furthest real distance (never boost, to avoid eating
+  // headroom). A layout with every speaker at the same distance - including
+  // the common case of a plain azimuth/elevation layout, where
+  // loadCustomLayoutFromFile() defaults radius to 1.0 for every line - makes
+  // this a no-op: gain 1.0, delay 0 for every channel. See the
+  // distanceDelaySeconds_ member comment.
+  double maxDistance = 0.0;
+  for (auto const& channel : layout.channels()) {
+    maxDistance = std::max(maxDistance, channel.polarPosition().distance);
+  }
+  if (maxDistance <= 0.0) maxDistance = 1.0;
+
+  std::vector<double> newDistanceDelaySeconds(newOutputChannels, 0.0);
+  for (int i = 0; i < newOutputChannels; ++i) {
+    auto distance = layout.channels()[static_cast<std::size_t>(i)]
+                        .polarPosition()
+                        .distance;
+    newOutputGains[static_cast<std::size_t>(i)] *= distance / maxDistance;
+    newDistanceDelaySeconds[static_cast<std::size_t>(i)] =
+        (maxDistance - distance) / kSpeedOfSoundMetresPerSecond;
+  }
+
   if (isNewLayout) ++layoutGeneration_;
 
   CustomProcessorConfig newConfig{
@@ -273,6 +320,7 @@ void EarCustomMonitoringAudioProcessor::applyLayout(
     std::lock_guard<std::mutex> lock(processingMutex_);
     numOutputChannels_ = newOutputChannels;
     outputGains_ = std::move(newOutputGains);
+    distanceDelaySeconds_ = std::move(newDistanceDelaySeconds);
     backend_ = std::move(newBackend);
     if (newProcessor) processor_ = std::move(newProcessor);
     processorConfig_ = newConfig;
@@ -281,6 +329,34 @@ void EarCustomMonitoringAudioProcessor::applyLayout(
   if (samplerate_ > 0) {
     levelMeter_->setup(numOutputChannels_, samplerate_);
   }
+  // Takes processingMutex_ itself - must run after the block above has
+  // released it.
+  updateDelayLines();
+}
+
+void EarCustomMonitoringAudioProcessor::updateDelayLines() {
+  if (samplerate_ <= 0) return;
+
+  auto blockSize =
+      processorConfig_.blockSize > 0 ? processorConfig_.blockSize : 512;
+  juce::dsp::ProcessSpec spec{static_cast<double>(samplerate_),
+                              static_cast<juce::uint32>(blockSize), 1u};
+
+  using DelayLineType =
+      juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>;
+  std::vector<DelayLineType> newDelayLines;
+  newDelayLines.reserve(distanceDelaySeconds_.size());
+  for (double delaySeconds : distanceDelaySeconds_) {
+    auto delaySamples =
+        static_cast<int>(std::lround(delaySeconds * samplerate_));
+    DelayLineType line(std::max(1, delaySamples));
+    line.prepare(spec);
+    line.setDelay(static_cast<float>(delaySamples));
+    newDelayLines.push_back(std::move(line));
+  }
+
+  std::lock_guard<std::mutex> lock(processingMutex_);
+  delayLines_ = std::move(newDelayLines);
 }
 
 void EarCustomMonitoringAudioProcessor::configureProcessor(
@@ -289,12 +365,31 @@ void EarCustomMonitoringAudioProcessor::configureProcessor(
   // (delay lines, decorrelators sized/designed from the layout's speaker
   // positions), so only do it when something that actually affects that
   // state has changed.
-  if (!processor_ || config != processorConfig_) {
-    processor_ = std::make_unique<ear::plugin::MonitoringAudioProcessor>(
-        config.inputChannels > 0 ? config.inputChannels : numDawChannels_,
-        config.layout, config.blockSize);
-    processorConfig_ = config;
+  {
+    std::lock_guard<std::mutex> lock(processingMutex_);
+    if (processor_ && config == processorConfig_) return;
   }
+
+  // This is called from prepareToPlay(), which a host is not guaranteed
+  // to only ever call strictly between audio callbacks - REAPER in
+  // particular can call it while reconfiguring a shared audio device
+  // buffer size/sample rate with the transport still rolling, i.e.
+  // potentially concurrently with processBlock() still running on the
+  // audio thread. processBlock() reads processor_/processorConfig_
+  // under processingMutex_ (see the member comment), so writing them
+  // here without the same lock was a real data race - a torn or
+  // use-after-freed read of processor_ on the audio thread, which is
+  // exactly the kind of sporadic glitch/crash on insert this fixes.
+  // Mirrors applyLayout()'s pattern: build the (slow to construct)
+  // replacement outside the lock, then swap it in while holding it only
+  // for the pointer/field assignment.
+  auto newProcessor = std::make_unique<ear::plugin::MonitoringAudioProcessor>(
+      config.inputChannels > 0 ? config.inputChannels : numDawChannels_,
+      config.layout, config.blockSize);
+
+  std::lock_guard<std::mutex> lock(processingMutex_);
+  processor_ = std::move(newProcessor);
+  processorConfig_ = config;
 }
 
 //==============================================================================

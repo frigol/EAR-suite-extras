@@ -32,7 +32,11 @@ ObjectsAudioProcessor::ObjectsAudioProcessor()
   addParameter(gain_ = new AudioParameterFloat("gain", "Gain", NormalisableRange<float>{-100.f, 6.f}, 0.f));
   addParameter(azimuth_ = new AudioParameterFloat("azimuth", "Azimuth", NormalisableRange<float>{-180.f, 180.f}, 0.f));
   addParameter(elevation_ = new AudioParameterFloat("elevation", "Elevation", NormalisableRange<float>{-90.f, 90.f}, 0.f));
-  addParameter(distance_ = new AudioParameterFloat("distance", "Distance", NormalisableRange<float>{0.f, 1.f}, 1.f));
+  // Range extends to 2.0, not 1.0: applyCartesianCube() (CUBE pad mode)
+  // computes real distance from the pad's x/y radius, which exceeds 1.0
+  // toward a room corner (up to sqrt(2) =~ 1.41 for a square room) - with a
+  // 0..1 range, applyParam()'s jlimit() was silently clamping those to 1.0.
+  addParameter(distance_ = new AudioParameterFloat("distance", "Distance", NormalisableRange<float>{0.f, 2.f}, 1.f));
   addParameter(linkSize_ = new AudioParameterBool("linkSize", "Link Size", false));
   addParameter(size_ = new AudioParameterFloat("size", "Size", 0.f, 1.f, 0.f));
   addParameter(width_ = new AudioParameterFloat("width", "Width", 0.f, 1.f, 0.f));
@@ -190,6 +194,7 @@ void ObjectsAudioProcessor::getStateInformation(MemoryBlock& destData) {
   xml->setAttribute("osc_port", oscPort_);
   xml->setAttribute("osc_source_index", oscSourceIndex_);
   xml->setAttribute("osc_protocol", static_cast<int>(oscProtocol_));
+  xml->setAttribute("osc_controlgris_pad_mode", static_cast<int>(controlGrisPadMode_));
   xml->setAttribute("name", connector_->getActiveName());
   copyXmlToBinary(*xml, destData);
 }
@@ -264,6 +269,9 @@ void ObjectsAudioProcessor::setStateInformation(XmlElement * xmlState, bool useD
     if(useDefaultsIfUnspecified || xmlState->hasAttribute("osc_protocol"))
       oscProtocol_ = static_cast<OscProtocol>(
           jlimit(0, 1, xmlState->getIntAttribute("osc_protocol", 1)));
+    if(useDefaultsIfUnspecified || xmlState->hasAttribute("osc_controlgris_pad_mode"))
+      controlGrisPadMode_ = static_cast<ControlGrisPadMode>(jlimit(
+          0, 1, xmlState->getIntAttribute("osc_controlgris_pad_mode", 0)));
     if(useDefaultsIfUnspecified || xmlState->hasAttribute("osc_enabled"))
       *oscEnabled_ = xmlState->getBoolAttribute("osc_enabled", false);
     applyOscConnection();
@@ -289,6 +297,10 @@ void ObjectsAudioProcessor::setOscSourceIndex(int index) {
 
 void ObjectsAudioProcessor::setOscProtocol(OscProtocol protocol) {
   oscProtocol_ = protocol;
+}
+
+void ObjectsAudioProcessor::setControlGrisPadMode(ControlGrisPadMode mode) {
+  controlGrisPadMode_ = mode;
 }
 
 void ObjectsAudioProcessor::applyOscConnection() {
@@ -342,7 +354,9 @@ float normaliseAzimuthDeg(float deg) {
 // Azimuth in CG's pad is clockwise from front (dy>0); ADM is anticlockwise
 // from front, hence the sign flip. ControlGRIS2's DOME mode has no distance
 // control (sources live on a unit dome), so distance is left at 1.0 rather
-// than guessed from x/y/z magnitude.
+// than guessed from x/y/z magnitude. (CUBE-SpatGris mode sends different,
+// centre-origin cartesian values with real distance info - deliberately
+// NOT handled here; this function only targets DOME mode.)
 void applyCartesian(AudioParameterFloat* azimuth, AudioParameterFloat* elevation,
                     AudioParameterFloat* distance, float x, float y, float z) {
   float dx = x - 0.5f;
@@ -352,6 +366,37 @@ void applyCartesian(AudioParameterFloat* azimuth, AudioParameterFloat* elevation
   applyParam(azimuth, normaliseAzimuthDeg(-azDegCg));
   applyParam(elevation, elDeg);
   applyParam(distance, 1.0f);
+}
+
+// CUBE mode - verified against a live OSC capture (2026-11-02, source
+// confirmed in CUBE mode throughout - a prior assumption in this comment
+// that some of that capture was DOME was wrong, corrected by the user):
+// x/y/z use the exact same pad convention as DOME's applyCartesian() above
+// (dx=x-0.5, dy=y-0.5, azimuth from atan2(dx,dy) with the same sign flip;
+// z=0 -> elevation 0 (listening-plane height, confirmed live - "Z al
+// massimo" / "altezza del punto di ascolto"), z=1 -> elevation 90; CUBE
+// cannot represent elevation below the listening plane, a ControlGRIS2
+// limitation, not something to work around here). NEW for CUBE: distance is
+// no longer fixed at 1.0 - |dx,dy| was confirmed to scale linearly with
+// fraction-of-the-way-to-a-wall (centre -> radius 0; a wall -> radius 0.5,
+// e.g. "10% toward front" measured y=0.55 = 0.5 + 0.10*0.5 exactly), so
+// distance = 2*sqrt(dx^2+dy^2): 0 at the centre, 1.0 at any wall, >1.0
+// toward a corner (genuinely farther away in a square room - not clamped).
+//
+// Selected over applyCartesian() in handleControlGris2Message() by
+// controlGrisPadMode_, a manual switch (not auto-detected - see its
+// declaration) since ControlGRIS2 sends the identical /xyz address for both
+// DOME and CUBE with nothing in the OSC payload to tell them apart.
+void applyCartesianCube(AudioParameterFloat* azimuth, AudioParameterFloat* elevation,
+                        AudioParameterFloat* distance, float x, float y, float z) {
+  float dx = x - 0.5f;
+  float dy = y - 0.5f;
+  float azDegCg = radiansToDegrees(std::atan2(dx, dy));
+  float elDeg = jlimit(-90.0f, 90.0f, z * 90.0f);
+  float dist = 2.0f * std::sqrt(dx * dx + dy * dy);
+  applyParam(azimuth, normaliseAzimuthDeg(-azDegCg));
+  applyParam(elevation, elDeg);
+  applyParam(distance, dist);
 }
 }  // namespace
 
@@ -448,13 +493,24 @@ void ObjectsAudioProcessor::handleControlGris2Message(
   // sends /x, /y, /z, /xy and /xyz/1, /xyz/2, /xyz/3 redundantly carrying
   // the same update, which would otherwise each re-trigger a partial, stale
   // move).
+  //
+  // controlGrisPadMode_ picks applyCartesian() (DOME) or applyCartesianCube()
+  // (CUBE) - see their comments above and the declaration of
+  // controlGrisPadMode_: ControlGRIS2 sends the identical /xyz address for
+  // both pad modes, so this plugin cannot tell them apart from the OSC
+  // payload alone and relies on the user telling it which one is in use.
   if (tokens.size() == 6 && tokens[5] == "xyz") {
     if (message.size() != 3 || !message[0].isFloat32() || !message[1].isFloat32() ||
         !message[2].isFloat32())
       return;
     setOscDebugText(describeOscMessage(message) + " [applied]");
-    applyCartesian(azimuth_, elevation_, distance_, message[0].getFloat32(),
-                  message[1].getFloat32(), message[2].getFloat32());
+    if (controlGrisPadMode_ == ControlGrisPadMode::Cube) {
+      applyCartesianCube(azimuth_, elevation_, distance_, message[0].getFloat32(),
+                         message[1].getFloat32(), message[2].getFloat32());
+    } else {
+      applyCartesian(azimuth_, elevation_, distance_, message[0].getFloat32(),
+                    message[1].getFloat32(), message[2].getFloat32());
+    }
     return;
   }
 }

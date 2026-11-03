@@ -138,6 +138,13 @@ R"5UPPL3M3N74RY(
           <audioChannelFormatIDRef>AC_0001001E</audioChannelFormatIDRef>
           <audioChannelFormatIDRef>AC_0001001F</audioChannelFormatIDRef>
         </audioPackFormat>
+        <!-- LFE Only -->
+        <!-- Single-channel pack reusing the common-definitions LFE channel
+             format, for sends/busses that carry just the LFE channel without
+             allocating a full bed layout's worth of DAW channels. -->
+        <audioPackFormat audioPackFormatID="AP_0001110c" audioPackFormatName="LFE Only" typeLabel="0001">
+          <audioChannelFormatIDRef>AC_00010004</audioChannelFormatIDRef>
+        </audioPackFormat>
 
         <!-- Layouts in MPEG-H ADM Profile 1.0.0 (but don't appear to be used in MHAS 5.0.0) -->
 

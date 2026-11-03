@@ -102,7 +102,7 @@ class ObjectsAudioProcessor
   // automation parameter (not normalised 0-1):
   //   /object/azimuth    -180..180
   //   /object/elevation  -90..90
-  //   /object/distance   0..1
+  //   /object/distance   0..2
   //   /object/gain       -100..6 (dB)
   //   /object/size       0..1
   //   /object/width      0..1
@@ -129,6 +129,15 @@ class ObjectsAudioProcessor
   // ControlGRIS2's DOME mode has no distance control, confirmed by an OSC
   // capture that only ever showed x/y/z/xy/xyz addresses.
   //
+  // CUBE mode: applyCartesian() above only covers DOME. ControlGRIS2 sends
+  // the identical /xyz address for both DOME and CUBE, with no way to tell
+  // them apart from the OSC payload - so this plugin can't auto-detect which
+  // one a source is in. controlGrisPadMode_ (below) is a manual switch the
+  // user sets to match whatever they have that ControlGRIS2 source set to;
+  // handleControlGris2Message() picks applyCartesian() or
+  // applyCartesianCube() (see the .cpp - verified against a live CUBE-mode
+  // OSC capture) based on it.
+  //
   // A second pair of messages covers ControlGRIS2's "Azimuth Span" /
   // "Elevation Span" controls, mapped onto EAR Object's Width/Height with
   // Size kept unlinked so the two stay independent rather than collapsing
@@ -148,6 +157,15 @@ class ObjectsAudioProcessor
   void setOscPort(int port);
   void setOscSourceIndex(int index);
   void setOscProtocol(OscProtocol protocol);
+
+  // Which of ControlGRIS2's two pad modes the /xyz position messages are
+  // assumed to be coming from (see the long comment above) - only relevant
+  // when oscProtocol_ == ControlGris2. The user sets this to match whatever
+  // they have that ControlGRIS2 source's pad set to; this plugin cannot
+  // detect it from the OSC traffic itself.
+  enum class ControlGrisPadMode { Dome = 0, Cube = 1 };
+  ControlGrisPadMode getControlGrisPadMode() const { return controlGrisPadMode_; }
+  void setControlGrisPadMode(ControlGrisPadMode mode);
 
   // Live diagnostic for the editor: every OSC packet this plugin receives
   // updates this (even one that gets filtered out by protocol/address/
@@ -173,6 +191,7 @@ class ObjectsAudioProcessor
   int oscPort_{9000};
   int oscSourceIndex_{1};
   OscProtocol oscProtocol_{OscProtocol::ControlGris2};
+  ControlGrisPadMode controlGrisPadMode_{ControlGrisPadMode::Dome};
   // The port this instance is actually subscribed to in OscPortRegistry
   // right now (-1 if none), tracked separately from oscPort_ so a port
   // change while enabled unsubscribes the OLD port rather than leaking a

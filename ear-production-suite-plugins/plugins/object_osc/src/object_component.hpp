@@ -50,6 +50,8 @@ class ObjectsComponent : public Component,
         oscPortSlider(std::make_unique<Slider>()),
         oscSrcIndexLabel(std::make_unique<Label>()),
         oscSrcIndexSlider(std::make_unique<Slider>()),
+        oscPadModeLabel(std::make_unique<Label>()),
+        oscPadModeCombo(std::make_unique<ComboBox>()),
         oscDebugLabel(std::make_unique<Label>()),
         statusBarLabel(std::make_unique<Label>()),
         propertiesFileLock(
@@ -59,7 +61,7 @@ class ObjectsComponent : public Component,
     tooltipWindow.setLookAndFeel(&tooltipLookAndFeel);
     tooltipWindow.setOpaque(false);
 
-    header->setText(" Object OSC for EAR Suite");
+    header->setText(" LF Object OSC for EAR Production Suite");
 
     byLabel.setFont(font::RobotoSingleton::instance().getRegular(11.f));
     byLabel.setColour(Label::textColourId,
@@ -159,6 +161,27 @@ class ObjectsComponent : public Component,
     };
     addAndMakeVisible(oscSrcIndexSlider.get());
 
+    // Which of ControlGRIS2's two pad modes to interpret /xyz as - this
+    // plugin can't tell DOME and CUBE apart from the OSC traffic itself
+    // (see the long comment on ObjectsAudioProcessor::controlGrisPadMode_),
+    // so the user sets this to match the ControlGRIS2 source directly.
+    oscPadModeLabel->setText("Pad", dontSendNotification);
+    oscPadModeLabel->setColour(Label::textColourId, EarColours::Text);
+    oscPadModeLabel->setJustificationType(Justification::centredRight);
+    addAndMakeVisible(oscPadModeLabel.get());
+
+    oscPadModeCombo->addItem("DOME", 1);
+    oscPadModeCombo->addItem("CUBE", 2);
+    oscPadModeCombo->setSelectedId(
+        p->getControlGrisPadMode() == ObjectsAudioProcessor::ControlGrisPadMode::Cube ? 2 : 1,
+        dontSendNotification);
+    oscPadModeCombo->onChange = [this]() {
+      p_->setControlGrisPadMode(oscPadModeCombo->getSelectedId() == 2
+                                    ? ObjectsAudioProcessor::ControlGrisPadMode::Cube
+                                    : ObjectsAudioProcessor::ControlGrisPadMode::Dome);
+    };
+    addAndMakeVisible(oscPadModeCombo.get());
+
     // Shows the last OSC packet this plugin received, even if it was
     // filtered out (wrong plugin id, wrong address) - the fastest way to
     // tell "is anything arriving, and does it look right" without an
@@ -253,6 +276,9 @@ class ObjectsComponent : public Component,
     oscRow2.removeFromLeft(15);
     oscSrcIndexLabel->setBounds(oscRow2.removeFromLeft(40));
     oscSrcIndexSlider->setBounds(oscRow2.removeFromLeft(110));
+    oscRow2.removeFromLeft(15);
+    oscPadModeLabel->setBounds(oscRow2.removeFromLeft(35));
+    oscPadModeCombo->setBounds(oscRow2.removeFromLeft(90));
     area.removeFromTop(5);
 
     auto oscDebugRow = area.removeFromTop(18);
@@ -304,6 +330,8 @@ class ObjectsComponent : public Component,
   std::unique_ptr<Slider> oscPortSlider;
   std::unique_ptr<Label> oscSrcIndexLabel;
   std::unique_ptr<Slider> oscSrcIndexSlider;
+  std::unique_ptr<Label> oscPadModeLabel;
+  std::unique_ptr<ComboBox> oscPadModeCombo;
   std::unique_ptr<Label> oscDebugLabel;
   std::shared_ptr<Label> statusBarLabel;
   Label versionLabel;

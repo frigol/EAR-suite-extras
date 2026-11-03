@@ -44,9 +44,9 @@ add_juce_vst3_plugin(
   ear_custom_monitoring
   SOURCES ${SOURCES_CUSTOM_MONITORING} ${HEADERS_CUSTOM_MONITORING}
   CODE_SUFFIX "AB" # Monitoring suffixes are A0-AA; binaural is F0; scene is FF
-  DISPLAY_NAME "Custom Monitoring for EAR Suite"
-  DESCRIPTION "Unofficial fork (based on EAR Production Suite 1.2.2) of EAR Monitoring that decodes to a loudspeaker layout loaded from a text file. Not affiliated with or endorsed by EBU."
-  OUTPUT_NAME "Custom Monitoring for EAR Suite"
+  DISPLAY_NAME "LF Custom Monitoring"
+  DESCRIPTION "Unofficial fork of EAR Monitoring that decodes to a loudspeaker layout loaded from a text file. Not affiliated with or endorsed by EBU."
+  OUTPUT_NAME "LF Custom Monitoring"
   MANUFACTURER_NAME "Luca Frigo"
   MANUFACTURER_WEBSITE "https://github.com/frigol/ear-suite-extras"
   MANUFACTURER_CODE "4C462020" # Hex for 'LF  '

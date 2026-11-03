@@ -28,7 +28,7 @@ EarCustomMonitoringAudioProcessorEditor::
   // Leading space: EarHeader positions the heading text right against the
   // logo's own bounding box with no gap, so without it the text visually
   // runs into the logo.
-  header_->setText(" Custom Monitoring for EAR Suite");
+  header_->setText(" LF Custom Monitoring for EAR Production Suite");
 
   byLabel_.setFont(font::RobotoSingleton::instance().getRegular(11.f));
   byLabel_.setColour(Label::textColourId,
@@ -105,7 +105,7 @@ void EarCustomMonitoringAudioProcessorEditor::rebuildSpeakerMeters() {
   }
 
   auto file = p_->currentLayoutFile();
-  std::string headingText = " Custom Monitoring for EAR Suite - " + layout.name();
+  std::string headingText = " LF Custom Monitoring - " + layout.name();
   header_->setText(headingText);
   layoutFileLabel_.setText(
       file.existsAsFile()

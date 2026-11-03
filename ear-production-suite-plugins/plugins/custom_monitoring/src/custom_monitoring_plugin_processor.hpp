@@ -121,6 +121,23 @@ class EarCustomMonitoringAudioProcessor : public AudioProcessor,
   std::vector<double> outputGains_;
   File currentLayoutFile_;
 
+  // Per-output-channel distance calibration, derived from each loaded
+  // speaker's real distance (CustomLayout's radius field - see
+  // custom_layout_file.hpp) relative to the single furthest speaker in the
+  // layout: closer speakers are attenuated and time-delayed so every speaker
+  // sounds as if it were at that furthest distance. A layout with every
+  // speaker at the same radius (e.g. all 1.0, the common case of an
+  // azimuth/elevation-only layout) yields gain 1.0 and 0 delay for every
+  // channel - i.e. this is a pure no-op unless the loaded room actually has
+  // unequal speaker distances. Composed into outputGains_ (see applyLayout())
+  // rather than applied separately; delaySeconds_ instead needs its own
+  // per-channel delay line (see updateDelayLines()), as libear's Layout/gain
+  // calculator has no notion of a time delay.
+  std::vector<double> distanceDelaySeconds_;
+  std::vector<juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>>
+      delayLines_;
+  void updateDelayLines();
+
   // loadLayoutFile() rebuilds backend_/processor_/outputGains_ on the
   // message thread (in response to a UI button click) at arbitrary times,
   // including while the host's audio thread may be concurrently inside

@@ -77,9 +77,9 @@ add_juce_vst3_plugin(object_osc
   SOURCES ${SOURCES_OBJECT_OSC_INPUT} ${HEADERS_OBJECT_OSC_INPUT}
   IDE_FOLDER ${IDE_FOLDER_PLUGINS}
   CODE_SUFFIX "13"
-  DISPLAY_NAME "Object OSC for EAR Suite"
-  DESCRIPTION "Unofficial fork (based on EAR Production Suite 1.2.2) of EAR Object with OSC remote control (own addresses + ControlGRIS2's xyz/span). Not affiliated with or endorsed by EBU."
-  OUTPUT_NAME "Object OSC for EAR Suite"
+  DISPLAY_NAME "LF Object OSC"
+  DESCRIPTION "Unofficial fork of EAR Object with OSC remote control (own addresses + ControlGRIS2's xyz/span). Not affiliated with or endorsed by EBU."
+  OUTPUT_NAME "LF Object OSC"
   MANUFACTURER_NAME "Luca Frigo"
   MANUFACTURER_WEBSITE "https://github.com/frigol/ear-suite-extras"
   MANUFACTURER_CODE "4C462020" # Hex for 'LF  '
