@@ -64,18 +64,34 @@ public:
 	int getTrackMapping();
 	int getInputInstanceId();
 
-	// "Reverb for EAR Suite" and "IR Reverb for EAR Suite" are not
+	// "LF Reverb", "LF IR Reverb" and "LF Multi-Encoder" are not
 	// one-plugin-instance-per-object inputs like the others: one instance
-	// reports up to REVERB_NUM_POINTS simultaneous object instance ids
-	// (see paramReverbInstanceIds below). This checks all of them for a
-	// match and - unlike getInputInstanceId() - remembers WHICH one
-	// matched (see matchedPointIndex()), so the position/gain parameters
-	// for that specific point can be located afterwards (see
-	// REVERB_POINT_PARAM_BASE_INDEX / pointParamIndexFor() in
+	// reports up to numPoints() simultaneous object instance ids (see
+	// paramReverbInstanceIds below) - 10 for either reverb's own fixed
+	// "4+6+0" layout, 24 for LF Multi-Encoder's own
+	// independently-activatable points (see point_encoder_plugin_processor.
+	// hpp). This checks all of the instance's own points for a match and -
+	// unlike getInputInstanceId() - remembers WHICH one matched (see
+	// matchedPointIndex()), so the position/gain parameters for that
+	// specific point can be located afterwards (see
+	// pointParamBaseIndex() / pointParamIndexFor() in
 	// exportaction_admsource-earvst.cpp).
 	bool matchesInputInstanceId(uint32_t searchId);
 	int matchedPointIndex() const { return matchedPointIndex_; }
 	bool isMultiObjectPlugin() const { return isReverbPlugin(name); }
+
+	// How many of the MULTI_OBJECT_NUM_POINTS_MAX reserved slots this
+	// specific instance's plugin type actually uses - see the class
+	// comment above and isMultiObjectPlugin()/isReverbPlugin() below.
+	// Returns 0 for a plugin that isn't a multi-object type at all.
+	int numPoints() const { return numPointsForMultiObjectPlugin(name); }
+	// Where this instance's own 8-field-per-point export parameter block
+	// starts - immediately after its own numPoints() instance-id
+	// parameters (see REVERB_POINT_PARAM_BASE_INDEX's old single-constant
+	// equivalent, now per-instance since different multi-object plugin
+	// types have different point counts).
+	int pointParamBaseIndex() const { return numPoints(); }
+	static int numPointsForMultiObjectPlugin(const std::string& vstNameStr);
 
 	// Statics
 
@@ -98,16 +114,18 @@ public:
 	static bool isInputPlugin(const std::string& vstName);
 	static bool isInputPlugin(ReaperAPI const& api, MediaTrack* trk, int vstPos);
 
-	// "Reverb for EAR Suite" and "IR Reverb for EAR Suite" each expose
-	// REVERB_NUM_POINTS (10) read-only instance-id parameters at raw
-	// indices 0..9 (their only addParameter() calls, in point order - see
-	// reverb_plugin_processor.cpp / ir_reverb_plugin_processor.cpp),
-	// followed immediately by 8 position/gain parameters per point
+	// Each multi-object plugin type exposes numPoints() read-only
+	// instance-id parameters at raw indices 0..numPoints()-1 (its only
+	// addParameter() calls, in point order - see reverb_plugin_processor.
+	// cpp / ir_reverb_plugin_processor.cpp / point_encoder_plugin_processor.
+	// cpp), followed immediately by 8 position/gain parameters per point
 	// (azimuth, elevation, distance, gain, width, height, depth, diffuse,
-	// in that order) at REVERB_POINT_PARAM_BASE_INDEX + point*8 + field.
-	// Both plugins and this file must stay in sync if any of this changes.
-	static constexpr int REVERB_NUM_POINTS = 10;
-	static constexpr int REVERB_POINT_PARAM_BASE_INDEX = REVERB_NUM_POINTS;
+	// in that order) at pointParamBaseIndex() + point*8 + field. All three
+	// plugins and this file must stay in sync if any of this changes.
+	// MULTI_OBJECT_NUM_POINTS_MAX is the widest of them (Point Encoder's
+	// 24), sizing paramReverbInstanceIds generously enough for any of them
+	// - only this instance's own numPoints() of it are ever populated/read.
+	static constexpr int MULTI_OBJECT_NUM_POINTS_MAX = 24;
 
 private:
 	// TODO: Fix hard-coded values - pull from plugin suite
@@ -117,7 +135,7 @@ private:
     std::unique_ptr<PluginParameter> paramObjectInstanceId{ createPluginParameter(16, { 0x0, 0xFFFF }) };
     std::unique_ptr<PluginParameter> paramDirectSpeakersInstanceId{ createPluginParameter(4, { 0x0, 0xFFFF }) };
     std::unique_ptr<PluginParameter> paramHoaInstanceId{ createPluginParameter(4, { 0x0, 0xFFFF }) };
-    std::array<std::unique_ptr<PluginParameter>, REVERB_NUM_POINTS> paramReverbInstanceIds;
+    std::array<std::unique_ptr<PluginParameter>, MULTI_OBJECT_NUM_POINTS_MAX> paramReverbInstanceIds;
     int matchedPointIndex_{ -1 };
 
 	// Statics

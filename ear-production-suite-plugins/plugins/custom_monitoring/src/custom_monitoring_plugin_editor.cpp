@@ -118,7 +118,7 @@ void EarCustomMonitoringAudioProcessorEditor::rebuildSpeakerMeters() {
 
 void EarCustomMonitoringAudioProcessorEditor::promptLoadLayout() {
   fileChooser_ = std::make_unique<FileChooser>(
-      "Select a loudspeaker layout file", File(), "*.txt;*.csv");
+      "Select a loudspeaker layout file", File(), "*.txt;*.csv;*.json");
   // Capture a SafePointer rather than "this": the dialog is async, and the
   // plugin window (and this editor with it) can be closed by the user or
   // the host while it's still open, before the callback fires.
@@ -133,6 +133,16 @@ void EarCustomMonitoringAudioProcessorEditor::promptLoadLayout() {
         try {
           safeThis->p_->loadLayoutFile(file);
           // rebuildSpeakerMeters() is triggered via p_->onLayoutChanged
+          if (!safeThis->p_->currentLayoutHasLfe()) {
+            // IEM JSON layouts never carry an LFE channel (AllRAD has no
+            // concept of one) - offer to designate one rather than silently
+            // rendering without a sub. Harmless to offer for a .txt load
+            // too (the user can just dismiss it), but only bother asking
+            // when the extension suggests it's actually likely.
+            if (file.getFileExtension().equalsIgnoreCase(".json")) {
+              safeThis->promptAssignLfe();
+            }
+          }
         } catch (const std::exception& e) {
           // Catches ear::plugin::CustomLayoutFileError (a malformed file)
           // as well as anything libear itself might throw while building
@@ -150,6 +160,71 @@ void EarCustomMonitoringAudioProcessorEditor::promptLoadLayout() {
               "The layout file could not be loaded (unknown error).");
         }
       });
+}
+
+void EarCustomMonitoringAudioProcessorEditor::promptAssignLfe() {
+  auto* aw = new AlertWindow(
+      "No subwoofer channel", // IEM's own term is irrelevant to the user
+      "This layout has no channel marked as the subwoofer (LFE). Pick an "
+      "existing speaker to use as the sub, or add a new one at its own "
+      "position, or skip this and render without a sub for now.",
+      AlertWindow::QuestionIcon);
+
+  StringArray choices;
+  choices.add("(skip - no subwoofer)");
+  choices.add("Add a new speaker as the subwoofer...");
+  for (auto const& ch : p_->currentLayout().channels()) {
+    choices.add("Use existing: " + String(ch.name()));
+  }
+  aw->addComboBox("choice", choices, "Subwoofer channel");
+
+  aw->addTextEditor("name", "Subwoofer", "New speaker name");
+  aw->addTextEditor("azimuth", "0.0", "Azimuth (deg)");
+  aw->addTextEditor("elevation", "-30.0", "Elevation (deg)");
+  aw->addTextEditor("radius", "1.0", "Radius (m)");
+  aw->addTextEditor("gain", "1.0", "Gain");
+
+  aw->addButton("OK", 1, KeyPress(KeyPress::returnKey));
+  aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
+
+  Component::SafePointer<EarCustomMonitoringAudioProcessorEditor> safeThis(
+      this);
+  aw->enterModalState(
+      true,
+      ModalCallbackFunction::create([safeThis, aw](int result) {
+        std::unique_ptr<AlertWindow> owned(aw);
+        if (safeThis == nullptr || result == 0) return;
+
+        auto* combo = aw->getComboBoxComponent("choice");
+        auto selected = combo != nullptr ? combo->getSelectedId() : 0;
+        if (selected <= 1) return;  // "skip" or nothing selected
+
+        try {
+          if (selected == 2) {
+            // "Add a new speaker as the subwoofer..."
+            auto name = aw->getTextEditorContents("name");
+            auto azimuth = aw->getTextEditorContents("azimuth").getDoubleValue();
+            auto elevation =
+                aw->getTextEditorContents("elevation").getDoubleValue();
+            auto radius = aw->getTextEditorContents("radius").getDoubleValue();
+            auto gain = aw->getTextEditorContents("gain").getDoubleValue();
+            if (name.isEmpty()) name = "Subwoofer";
+            safeThis->p_->addLfeChannelToCurrentLayout(name, azimuth,
+                                                       elevation, radius, gain);
+          } else {
+            // "Use existing: <name>" entries start at combo id 3, in the
+            // same order as p_->currentLayout().channels().
+            std::size_t index = static_cast<std::size_t>(selected - 3);
+            safeThis->p_->promoteChannelToLfe(index);
+          }
+        } catch (const std::exception& e) {
+          AlertWindow::showMessageBoxAsync(
+              AlertWindow::WarningIcon, "Could not set subwoofer channel",
+              String("The subwoofer channel could not be set:\n\n") +
+                  e.what());
+        }
+      }),
+      false);
 }
 
 void EarCustomMonitoringAudioProcessorEditor::paint(Graphics& g) {

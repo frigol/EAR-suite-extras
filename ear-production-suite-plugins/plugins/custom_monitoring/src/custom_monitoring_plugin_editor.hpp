@@ -46,6 +46,7 @@ class EarCustomMonitoringAudioProcessorEditor
 
   void rebuildSpeakerMeters();
   void promptLoadLayout();
+  void promptAssignLfe();
 
   // --- Onboarding::Listener
   void endButtonClicked(ear::plugin::ui::Onboarding* onboarding) override;

@@ -258,9 +258,33 @@ void EarCustomMonitoringAudioProcessor::loadLayoutFile(const File& file) {
         std::to_string(numDawChannels_) + ")");
   }
 
+  lastLoadedLayout_ = customLayout;
   applyLayout(customLayout.layout, customLayout.outputGains, true);
   currentLayoutFile_ = file;
 
+  if (onLayoutChanged) onLayoutChanged();
+}
+
+void EarCustomMonitoringAudioProcessor::promoteChannelToLfe(
+    std::size_t index) {
+  ear::plugin::setChannelIsLfe(lastLoadedLayout_, index);
+  applyLayout(lastLoadedLayout_.layout, lastLoadedLayout_.outputGains, true);
+  if (onLayoutChanged) onLayoutChanged();
+}
+
+void EarCustomMonitoringAudioProcessor::addLfeChannelToCurrentLayout(
+    const String& name, double azimuth, double elevation, double radius,
+    double gain) {
+  if (static_cast<int>(lastLoadedLayout_.layout.channels().size()) + 1 >
+      numDawChannels_) {
+    throw ear::plugin::CustomLayoutFileError(
+        "Adding another speaker would exceed the DAW channel width "
+        "available to this plugin (" +
+        std::to_string(numDawChannels_) + ")");
+  }
+  ear::plugin::addLfeChannel(lastLoadedLayout_, name.toStdString(), azimuth,
+                             elevation, radius, gain);
+  applyLayout(lastLoadedLayout_.layout, lastLoadedLayout_.outputGains, true);
   if (onLayoutChanged) onLayoutChanged();
 }
 

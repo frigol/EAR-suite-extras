@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "components/level_meter_calculator.hpp"
+#include "helper/custom_layout_file.hpp"
 #include <daw_channel_count.h>
 
 namespace ear {
@@ -102,6 +103,28 @@ class EarCustomMonitoringAudioProcessor : public AudioProcessor,
   const ear::Layout& currentLayout() const { return processorConfig_.layout; }
   File currentLayoutFile() const { return currentLayoutFile_; }
 
+  /** @brief True if the layout last loaded by loadLayoutFile() already has a
+   * channel marked as LFE. IEM JSON imports never do (see
+   * ear::plugin::parseCustomLayoutIemJson) - the editor uses this to offer
+   * the user a way to designate one after loading, rather than failing or
+   * silently rendering without a sub. */
+  bool currentLayoutHasLfe() const {
+    return ear::plugin::hasLfeChannel(lastLoadedLayout_);
+  }
+
+  /** @brief Re-mark an existing channel of the currently loaded layout
+   * (by index into currentLayout().channels()) as the LFE channel, clearing
+   * the flag on every other channel, and rebuild the gain calculator for it. */
+  void promoteChannelToLfe(std::size_t index);
+
+  /** @brief Append a brand-new LFE channel to the currently loaded layout
+   * and rebuild the gain calculator for it.
+   * @throws ear::plugin::CustomLayoutFileError if this would exceed the DAW
+   *     channel width available to this plugin instance. */
+  void addLfeChannelToCurrentLayout(const String& name, double azimuth,
+                                    double elevation, double radius,
+                                    double gain);
+
   /** @brief Called on the message thread after a layout has been
    * successfully (re)loaded, so the editor can rebuild its speaker meters. */
   std::function<void()> onLayoutChanged;
@@ -120,6 +143,12 @@ class EarCustomMonitoringAudioProcessor : public AudioProcessor,
   int layoutGeneration_{0};
   std::vector<double> outputGains_;
   File currentLayoutFile_;
+
+  // The layout/gains exactly as loaded from the file (before the distance
+  // calibration applyLayout() folds into outputGains_ below) - kept so
+  // promoteChannelToLfe()/addLfeChannelToCurrentLayout() can mutate and
+  // re-apply it without that calibration compounding on every call.
+  ear::plugin::CustomLayout lastLoadedLayout_;
 
   // Per-output-channel distance calibration, derived from each loaded
   // speaker's real distance (CustomLayout's radius field - see

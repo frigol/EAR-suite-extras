@@ -2,7 +2,7 @@
 # Installer for EAR Suite Extras (macOS, Apple Silicon prebuilt plugins).
 # Copies the prebuilt VST3 plugins into your VST3 folder, and - if the
 # official reaper-adm-extension is already installed - patches it so
-# Reverb/IR Reverb export correctly to ADM. See README.md for what each
+# this fork's plugins export correctly to ADM. See README.md for what each
 # step does and why, and for build-from-source instructions on other
 # platforms.
 set -euo pipefail
@@ -36,7 +36,7 @@ else
 fi
 
 echo
-echo "== reaper-adm-extension ADM export patch (Reverb / IR Reverb) =="
+echo "== reaper-adm-extension ADM export patch =="
 if [[ -f "$REAPER_ADM_DEST" ]]; then
   if [[ ! -f "$REAPER_ADM_DEST.orig" ]]; then
     echo "Backing up existing reaper_adm.dylib to reaper_adm.dylib.orig"
@@ -44,7 +44,7 @@ if [[ -f "$REAPER_ADM_DEST" ]]; then
   else
     echo "Backup already exists (reaper_adm.dylib.orig) - leaving it as is."
   fi
-  echo "Installing patched reaper_adm.dylib (enables ADM export for Reverb/IR Reverb)"
+  echo "Installing patched reaper_adm.dylib (enables ADM export for this fork's plugins)"
   cp "$REAPER_ADM_PATCH" "$REAPER_ADM_DEST"
 else
   echo "reaper-adm-extension not found at:"

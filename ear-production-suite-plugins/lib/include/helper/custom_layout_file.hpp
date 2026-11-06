@@ -54,17 +54,61 @@ struct EAR_PLUGIN_BASE_EXPORT CustomLayout {
 };
 
 /** @brief Parse a custom loudspeaker layout from the given file.
+ *
+ * Two formats are supported, chosen by the file's extension:
+ *   - ".txt"/".csv" (or anything else): the plugin's own simple text format,
+ *     documented on CustomLayout above.
+ *   - ".json": an IEM AllRADecoder loudspeaker layout export (the
+ *     "LoudspeakerLayout"/"Loudspeakers" array of {Azimuth, Elevation,
+ *     Radius, Gain, Channel, IsImaginary} objects). IEM's azimuth/elevation
+ *     convention already matches BS.2051/libear's (0 = front, positive
+ *     azimuth = left, positive elevation = up), so no sign conversion is
+ *     applied. Entries with "IsImaginary": true are AllRAD's own virtual
+ *     filler positions (not real loudspeakers) and are skipped. Channels
+ *     are named "CH<n>" from their "Channel" field.
+ *
+ *     IEM's format has no concept of an LFE/subwoofer channel, so nothing
+ *     is marked as LFE unless the file carries this plugin's own
+ *     non-standard extra field "IsLFE": true/false on a loudspeaker entry
+ *     (IEM's own tools ignore fields they don't recognise, so adding this
+ *     by hand keeps the file working in IEM's plugins too). Use
+ *     hasLfeChannel(), setChannelIsLfe() and addLfeChannel() below to let
+ *     the user resolve this after loading, rather than failing the load.
+ *
  * @throws CustomLayoutFileError on any parse error (message includes the
- *     offending line number where applicable).
+ *     offending line number where applicable, for the text format).
  */
 EAR_PLUGIN_BASE_EXPORT CustomLayout
 loadCustomLayoutFromFile(const std::string& filePath);
 
-/** @brief As loadCustomLayoutFromFile(), but parses already-read file
- * contents. Exposed mainly for testing. */
+/** @brief As loadCustomLayoutFromFile() for the plugin's own text format,
+ * but parses already-read file contents. Exposed mainly for testing. */
 EAR_PLUGIN_BASE_EXPORT CustomLayout
 parseCustomLayout(const std::string& fileContents,
                    const std::string& layoutName = "custom");
+
+/** @brief As loadCustomLayoutFromFile() for the IEM JSON format, but parses
+ * already-read file contents. Exposed mainly for testing. */
+EAR_PLUGIN_BASE_EXPORT CustomLayout
+parseCustomLayoutIemJson(const std::string& fileContents,
+                         const std::string& layoutName = "custom");
+
+/** @brief True if any channel in the layout is already marked as LFE. */
+EAR_PLUGIN_BASE_EXPORT bool hasLfeChannel(const CustomLayout& layout);
+
+/** @brief Mark an existing channel (by its index into layout.layout.channels())
+ * as LFE, clearing the flag on every other channel first (a loudspeaker
+ * layout here has at most one LFE output). */
+EAR_PLUGIN_BASE_EXPORT void setChannelIsLfe(CustomLayout& layout,
+                                            std::size_t index);
+
+/** @brief Append a brand-new channel to the layout and mark it as LFE,
+ * clearing the flag on every other channel first. For IEM JSON imports,
+ * which never describe a subwoofer position at all. */
+EAR_PLUGIN_BASE_EXPORT void addLfeChannel(CustomLayout& layout,
+                                          const std::string& name,
+                                          double azimuth, double elevation,
+                                          double radius, double gain);
 
 }  // namespace plugin
 }  // namespace ear

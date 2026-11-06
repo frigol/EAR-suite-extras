@@ -1,29 +1,38 @@
-# reaper-adm-extension patch (ADM export recognition for Reverb / IR Reverb)
+# reaper-adm-extension patch (ADM export recognition for this fork's plugins)
 
 **Who needs this**: only people who want to *export* a session containing
-**Reverb for EAR Suite** or **IR Reverb for EAR Suite** to BW64/ADM via
-REAPER's ADM export (the official `reaper-adm-extension`, installed
-alongside the upstream [EAR Production Suite](https://github.com/ebu/ear-production-suite)).
-If you only use these two plugins for monitoring/mixing and never export
-ADM, you don't need this.
+**LF Object OSC**, **LF LFE Send**, **LF Reverb**, **LF IR Reverb**,
+**LF Multi-Encoder**, or **LF Object OSC Stereo** to BW64/ADM via REAPER's
+ADM export (the official `reaper-adm-extension`, installed alongside the
+upstream [EAR Production Suite](https://github.com/ebu/ear-production-suite)).
+If you only use these plugins for monitoring/mixing and never export ADM,
+you don't need this.
 
 **Why it's needed**: `reaper-adm-extension` recognizes input plugins (EAR
 Object, DirectSpeakers, HOA) by exact VST3 plugin name and reads their
-position/gain by raw parameter index. Reverb and IR Reverb aren't in its
-list, so without this patch, exporting a session with either of them
-produces `Unable to find Input plugin with instance ID ...` and the
-reverb's 10 points are silently dropped from the exported file.
+position/gain by raw parameter index. None of this fork's renamed/added
+plugins are in its list, so without this patch, exporting a session
+containing any of them produces `Unable to find Input plugin with instance
+ID ...` and that plugin's object(s) are silently dropped from the exported
+file.
 
 **What it does**: `exportaction_admsource-earvst.cpp`/`.h` are the
 upstream files from `reaper-adm-extension/src/reaper_adm/` (part of the
 [ear-production-suite](https://github.com/ebu/ear-production-suite) monorepo,
 GPLv3, same base version this fork tracks - see the main [README](../README.md)),
-with `isReverbPlugin()` extended to recognize "Reverb for EAR Suite" and
-"IR Reverb for EAR Suite", and `ShiftedPluginParameter`/`matchesInputInstanceId()`
-reading each plugin's 10 points' position/gain from the 80 export-mirror
-parameters both plugins expose right after their 10 instance-id parameters
-(see the comments in the patched `.h` file for the exact parameter layout
-both plugins and this file must agree on).
+with:
+- `isObjectPlugin()` extended to recognize "LF Object OSC" (same single-
+  object, fixed-parameter-index layout as the stock EAR Object plugin).
+- `isDirectSpeakersPlugin()` extended to recognize "LF LFE Send" (same
+  layout as the stock DirectSpeakers plugin, just restricted to one LFE
+  channel).
+- `isReverbPlugin()` extended to recognize "LF Reverb", "LF IR Reverb",
+  "LF Multi-Encoder" and "LF Object OSC Stereo" as multi-object inputs
+  (10, 10, 24 and 2 points respectively), with `ShiftedPluginParameter`/
+  `matchesInputInstanceId()` reading each one's points' position/gain from
+  the export-mirror parameters every one of them exposes right after their
+  own instance-id parameters (see the comments in the patched `.h` file for
+  the exact parameter layout each plugin and this file must agree on).
 
 ## Option A: prebuilt dylib (macOS, Apple Silicon)
 

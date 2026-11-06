@@ -146,6 +146,8 @@ set_source_files_properties(${EAR_PROTO_INPUT} PROPERTIES HEADER_ONLY TRUE)
 source_group("Header Files" FILES ${EAR_BASE_HEADERS})
 target_sources(ear-plugin-base PRIVATE ${EAR_PROTO_INPUT} ${EAR_BASE_HEADERS})
 
+find_package(nlohmann_json CONFIG REQUIRED)
+
 target_link_libraries(ear-plugin-base PUBLIC
   ear
   bear
@@ -155,7 +157,8 @@ target_link_libraries(ear-plugin-base PUBLIC
   spdlog::spdlog
   bw64
   adm
-  Eigen3::Eigen)
+  Eigen3::Eigen
+  nlohmann_json::nlohmann_json)
 if(SPDLOG_FMT_EXTERNAL)
   target_link_libraries(ear-plugin-base PUBLIC fmt::fmt)
 endif()

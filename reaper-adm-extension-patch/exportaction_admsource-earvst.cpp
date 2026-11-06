@@ -378,7 +378,7 @@ int reverbPointFieldOffsetFor(AdmParameter admParameter) {
 
 // Wraps a PluginParameter (as returned by EARPluginSuite::getPluginParameterFor(),
 // which always assumes one plugin instance = one object, at a single fixed
-// index) and redirects index() to one of "Reverb for EAR Suite"'s own
+// index) and redirects index() to one of "LF Reverb"'s own
 // per-point parameters instead - everything else (forwardMap/reverseMap/
 // admParameter) is identical between a point and a real Object, so those
 // just forward to the wrapped parameter unchanged.
@@ -408,7 +408,7 @@ std::unique_ptr<PluginParameter> resolveForPoint(PluginInstance* pluginInst,
     if (reverbInst && reverbInst->isMultiObjectPlugin() && reverbInst->matchedPointIndex() >= 0) {
         int fieldOffset = reverbPointFieldOffsetFor(admParameter);
         if (fieldOffset >= 0) {
-            int shiftedIndex = EarInputVst::REVERB_POINT_PARAM_BASE_INDEX +
+            int shiftedIndex = reverbInst->pointParamBaseIndex() +
                                reverbInst->matchedPointIndex() * 8 + fieldOffset;
             return std::make_unique<ShiftedPluginParameter>(param, shiftedIndex);
         }
@@ -534,7 +534,7 @@ bool EarInputVst::isObjectPlugin(const std::string& vstNameStr)
     // here too, alongside the stock name.
     static const std::vector<std::string> recognizedObjectPluginNames = {
         objectVstName,
-        "Object OSC for EAR Suite", // ear-suite-extras fork (OSC remote control added)
+        "LF Object OSC", // ear-suite-extras fork (OSC remote control added)
     };
     return std::find(recognizedObjectPluginNames.begin(), recognizedObjectPluginNames.end(),
                      vstNameStr) != recognizedObjectPluginNames.end();
@@ -542,10 +542,23 @@ bool EarInputVst::isObjectPlugin(const std::string& vstNameStr)
 
 bool EarInputVst::isDirectSpeakersPlugin(const std::string& vstNameStr)
 {
-    return vstNameStr == directSpeakersVstName;
+    // Same recognized-forks pattern as isObjectPlugin() above. "LF LFE
+    // Send" mirrors the stock DirectSpeakers plugin's own parameter layout
+    // exactly (routing, packFormatIdValue, bypass, useTrackName,
+    // inputInstanceId at index 4 - see lfe_send_plugin_processor.cpp and
+    // paramDirectSpeakersInstanceId/paramDirectSpeakersPackFormatIdValue
+    // below), just restricted to a single LFE channel's pack format, so it
+    // is read identically here.
+    static const std::vector<std::string> recognizedDirectSpeakersPluginNames = {
+        directSpeakersVstName,
+        "LF LFE Send", // ear-suite-extras fork (LFE-only DirectSpeakers)
+    };
+    return std::find(recognizedDirectSpeakersPluginNames.begin(),
+                     recognizedDirectSpeakersPluginNames.end(),
+                     vstNameStr) != recognizedDirectSpeakersPluginNames.end();
 }
 
-std::string EarInputVst::reverbVstName = "Reverb for EAR Suite";
+std::string EarInputVst::reverbVstName = "LF Reverb";
 
 const std::string* EarInputVst::getReverbVstNameStr()
 {
@@ -559,21 +572,34 @@ bool EarInputVst::isReverbVstAvailable(ReaperAPI const& api, bool doRescan)
 
 bool EarInputVst::isReverbPlugin(const std::string& vstNameStr)
 {
-    // Same recognized-forks pattern as isObjectPlugin() above: "IR Reverb
-    // for EAR Suite" is a separate plugin (convolution instead of
-    // algorithmic FDN/MVerb) but exposes the exact same multi-object
-    // parameter layout - REVERB_NUM_POINTS read-only instance-id
-    // parameters at indices 0..9 followed immediately by 8 position/gain
-    // parameters per point at REVERB_POINT_PARAM_BASE_INDEX + point*8 +
-    // field (see ir_reverb_plugin_processor.cpp's constructor, which
-    // mirrors reverb_plugin_processor.cpp's addParameter() order exactly)
-    // - so it can be treated identically here.
+    // Same recognized-forks pattern as isObjectPlugin() above: "LF
+    // Reverb", "LF IR Reverb", "LF Multi-Encoder" and "LF Object OSC Stereo"
+    // are four separate plugins, each a multi-object input with its own
+    // numPointsForMultiObjectPlugin() point count, but otherwise read
+    // identically here (see numPoints()/pointParamBaseIndex()). "LF Object
+    // Stereo" is a fixed 2-point case (its L/R pair) rather than a
+    // variable/activatable set like the other three, but the export
+    // contract (N instance-id params then N*8 position/gain fields, and
+    // nothing else) is identical - see object_stereo_plugin_processor.cpp.
     static const std::vector<std::string> recognizedReverbPluginNames = {
         reverbVstName,
-        "IR Reverb for EAR Suite",
+        "LF IR Reverb",
+        "LF Multi-Encoder",
+        "LF Object OSC Stereo",
     };
     return std::find(recognizedReverbPluginNames.begin(), recognizedReverbPluginNames.end(),
                      vstNameStr) != recognizedReverbPluginNames.end();
+}
+
+int EarInputVst::numPointsForMultiObjectPlugin(const std::string& vstNameStr)
+{
+    if (vstNameStr == reverbVstName || vstNameStr == "LF IR Reverb")
+        return 10;
+    if (vstNameStr == "LF Multi-Encoder")
+        return 24;
+    if (vstNameStr == "LF Object OSC Stereo")
+        return 2;
+    return 0;
 }
 
 bool EarInputVst::isInputPlugin(const std::string& vstName)
@@ -607,7 +633,7 @@ EarInputVst::EarInputVst(MediaTrack * mediaTrack, int fxIndex, ReaperAPI const &
     guid = std::make_unique<ReaperGUID>(api.TrackFX_GetFXGUID(mediaTrack, fxIndex));
 
     if (isReverbPlugin(name)) {
-        for (int i = 0; i < REVERB_NUM_POINTS; ++i) {
+        for (int i = 0; i < numPoints(); ++i) {
             paramReverbInstanceIds[static_cast<size_t>(i)] = createPluginParameter(i, { 0x0, 0xFFFF });
         }
     }
@@ -645,7 +671,7 @@ int EarInputVst::getInputInstanceId() {
 
 bool EarInputVst::matchesInputInstanceId(uint32_t searchId) {
     if (isReverbPlugin(name)) {
-        for (int i = 0; i < REVERB_NUM_POINTS; ++i) {
+        for (int i = 0; i < numPoints(); ++i) {
             auto optVal = getParameterWithConvertToInt(*paramReverbInstanceIds[static_cast<size_t>(i)]);
             if (optVal.has_value() && static_cast<uint32_t>(*optVal) == searchId) {
                 matchedPointIndex_ = i;

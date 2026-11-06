@@ -4,20 +4,23 @@ Unofficial plugins extending the [EBU ADM Renderer Production Suite](https://git
 
 **This is an independent, unofficial fork. It is not affiliated with, endorsed by, or supported by the BBC, EBU, or IRT.** See [COPYRIGHT.TXT](COPYRIGHT.TXT) and [LICENSE.TXT](LICENSE.TXT).
 
-**Version 1.2.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
+**Version 1.3.0** of this repo — based on EAR Production Suite **1.2.2**. This project has its own version number and release history, independent of upstream's: check the [Releases page](../../releases) for updates, not upstream's.
 
 ## What's here
 
 All plugin names below are short DAW-visible names ("LF ..."); every one of them is for **EAR Production Suite** and needs its shared library/EAR Scene already running in the session.
 
 - **LF Object OSC** — the EAR Object plugin with OSC remote control added: an external system (e.g. [ControlGRIS2](https://github.com/GRIS-UdeM/ControlGris)) can drive an object's position and extent live. Several instances can share one UDP port, each identified by its own source index.
-- **LF Custom Monitoring** — the EAR Monitoring plugin, but the loudspeaker layout is loaded at runtime from a plain text file instead of chosen from a fixed list of standard layouts, so it can decode to any loudspeaker rig, including subwoofers at arbitrary positions.
+- **LF Object OSC Stereo** — a single plugin instance driving a *linked pair* of Objects (two independent Scene connections) from one set of controls: a shared centre azimuth/elevation/distance, a Pair Distance (angular separation between the two objects, split evenly around the centre) and a Pair Rotation (the separation axis's roll - 0° spreads the pair horizontally, i.e. classic L/R stereo; 90° spreads it vertically). Gain/Width/Height/Depth/Diffuse apply identically to both objects. Has the same OSC remote control as LF Object OSC, driving the shared centre. Saves placing and keeping two ordinary Object plugins in sync by hand for a conventional stereo pair.
+- **LF Custom Monitoring** — the EAR Monitoring plugin, but the loudspeaker layout is loaded at runtime from a plain text file (or an IEM AllRADecoder `.json` export) instead of chosen from a fixed list of standard layouts, so it can decode to any loudspeaker rig, including subwoofers at arbitrary positions and rooms with unequal speaker distances (per-speaker gain/delay compensation).
 - **LF Reverb** — a direction-weighted spatial reverb: reports 10 points (the same "4+6+0" hexagon+top-4 layout as BS.2051's own mid/top rings) to EAR Scene as independent Objects, each panned from the active source(s) feeding it, with early reflections plus a shared algorithmic diffuse tail (switchable between a custom FDN and an MVerb plate engine). Needs EAR Scene (from the official EAR Production Suite) already running in the session.
 - **LF IR Reverb** — the same 10-point architecture as LF Reverb, but the diffuse tail is a convolution against a loaded impulse response instead of an algorithmic engine. Accepts mono, stereo, AmbiX (any order), or a 9/10-channel discrete array IR (PCMA-3D-style layout); each of the 10 output points has a full Object-style parameter set (position, gain, width/height/depth, diffuse) and can be adjusted independently afterwards.
+- **LF Multi-Encoder** (source build only, see below) — up to 24 independently-activatable points, each a full Object-style encoder reading one of its own input channels; several LF Reverb/LF IR Reverb instances' matching points can be summed into one shared instance instead of each registering its own Objects with Scene.
+- **LF LFE Send** (source build only, see below) — like DirectSpeakers, but exposes only the LFE channel, so a track that only needs to feed the subwoofer doesn't have to carry a full speaker-layout pack format.
 
-Both Reverb plugins also need **EAR Scene** running in the session to hear anything - they register their 10 points with it exactly like a normal EAR Object plugin, they don't output audio on their own track.
+Reverb/Multi-Encoder plugins also need **EAR Scene** running in the session to hear anything - they register their points with it exactly like a normal EAR Object plugin, they don't output audio on their own track.
 
-All four are VST3 only (macOS Apple Silicon prebuilt; other platforms need a source build — see below).
+Five plugins (Object OSC, Object OSC Stereo, Custom Monitoring, Reverb, IR Reverb) are VST3 prebuilt (macOS Apple Silicon); LF Multi-Encoder and LF LFE Send are source-build only for now (see below) - all platforms other than macOS Apple Silicon also need a source build.
 
 ## Installing the prebuilt plugins
 
@@ -27,7 +30,7 @@ All four are VST3 only (macOS Apple Silicon prebuilt; other platforms need a sou
 ./install.sh
 ```
 
-This copies all four `.vst3` bundles into `~/Library/Audio/Plug-Ins/VST3/`, and - if it detects REAPER's official `reaper-adm-extension` already installed - patches it so LF Reverb/LF IR Reverb export correctly to ADM (see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md); it's safe to re-run, and it backs up the original file first).
+This copies the prebuilt `.vst3` bundles into `~/Library/Audio/Plug-Ins/VST3/`, and - if it detects REAPER's official `reaper-adm-extension` already installed - patches it so this fork's plugins export correctly to ADM (see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md); it's safe to re-run, and it backs up the original file first).
 
 Or by hand, on any platform:
 
@@ -128,8 +131,8 @@ Built plugins land in `build/<preset>/ear-production-suite-plugins/VST3/`. Copy 
 
 If you cloned without `--recursive`, run `git submodule update --init --recursive` afterwards.
 
-This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these four plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite). If you need the REAPER ADM export extension to recognize LF Reverb/LF IR Reverb, see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md).
+This repo is a trimmed fork: it carries only the shared library code and CMake plumbing needed to build these plugins, not the full upstream EAR Production Suite (other plugins, the REAPER ADM export extension, installers). For the complete suite, see the [upstream repository](https://github.com/ebu/ear-production-suite). If you need the REAPER ADM export extension to recognize this fork's plugins, see [reaper-adm-extension-patch/README.md](reaper-adm-extension-patch/README.md).
 
 ## License
 
-GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for all four plugins is in this repository under `ear-production-suite-plugins/plugins/`. LF Reverb's MVerb tail engine is third-party code under its own license - see [`ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt`](ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt). The `reaper-adm-extension` patch (needed only for ADM export of LF Reverb/LF IR Reverb) is distributed separately under [reaper-adm-extension-patch/](reaper-adm-extension-patch/) — see its own README for details and license notes.
+GPLv3, same as upstream — see [LICENSE.TXT](LICENSE.TXT) and [COPYRIGHT.TXT](COPYRIGHT.TXT). Source code for all plugins is in this repository under `ear-production-suite-plugins/plugins/`. LF Reverb's MVerb tail engine is third-party code under its own license - see [`ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt`](ear-production-suite-plugins/plugins/reverb/third_party/MVERB_LICENSE.txt). The `reaper-adm-extension` patch (needed only for ADM export) is distributed separately under [reaper-adm-extension-patch/](reaper-adm-extension-patch/) — see its own README for details and license notes.
