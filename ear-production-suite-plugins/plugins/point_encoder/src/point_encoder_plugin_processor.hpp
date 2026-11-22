@@ -242,6 +242,12 @@ class PointEncoderAudioProcessor : public juce::AudioProcessor,
       pointBackends_;
 
   juce::Colour trackColour_{juce::Colours::orange};
+  // Prepended to each point's own manually-typed name when pushing it to
+  // Scene (pushPointPropertiesToScene()) - e.g. track "Ambience" + point
+  // name "Left" reaches Scene as "Ambience Left". The point's own name_
+  // field keeps exactly what the user typed; only the Scene-facing name is
+  // combined, so retyping the track name into every point isn't needed.
+  juce::String lastKnownTrackName_;
   bool pointsExpanded_{false};
 
   // Same mechanism as the algorithmic Reverb's own instance-id + export

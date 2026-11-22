@@ -193,7 +193,10 @@ void PointEncoderAudioProcessor::pushPointPropertiesToScene(int pointIndex) {
     std::lock_guard<std::mutex> lock(pointStateMutex_);
     st = pointState_[idx];
   }
-  c->setName(st.name.toStdString());
+  auto sceneName = lastKnownTrackName_.isNotEmpty()
+                      ? lastKnownTrackName_ + " " + st.name
+                      : st.name;
+  c->setName(sceneName.toStdString());
   c->setColour(trackColour_.getARGB());
   c->setRouting(st.earChannel);
   c->setPosition(st.azimuthDeg, st.elevationDeg, st.distance);
@@ -445,9 +448,13 @@ void PointEncoderAudioProcessor::updateTrackProperties(
     const TrackProperties& properties) {
   trackColour_ = properties.colour.isTransparent() ? juce::Colours::orange
                                                    : properties.colour;
-  for (int i = 0; i < kMaxPoints; ++i)
-    if (pointConnectors_[static_cast<size_t>(i)])
-      pointConnectors_[static_cast<size_t>(i)]->setColour(trackColour_.getARGB());
+  bool nameChanged = lastKnownTrackName_ != properties.name;
+  lastKnownTrackName_ = properties.name;
+  for (int i = 0; i < kMaxPoints; ++i) {
+    if (!pointConnectors_[static_cast<size_t>(i)]) continue;
+    pointConnectors_[static_cast<size_t>(i)]->setColour(trackColour_.getARGB());
+    if (nameChanged) pushPointPropertiesToScene(i);
+  }
 }
 
 void PointEncoderAudioProcessor::notifyPointsChangedOnMessageThread() {

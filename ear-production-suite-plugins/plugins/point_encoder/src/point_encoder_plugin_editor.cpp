@@ -2,6 +2,7 @@
 #include "components/look_and_feel/colours.hpp"
 #include "components/look_and_feel/fonts.hpp"
 #include "helper/custom_layout_file.hpp"
+#include <daw_channel_count.h>
 
 using namespace ear::plugin::ui;
 
@@ -14,13 +15,13 @@ class PointsColumnHeader : public juce::Component {
   void paint(juce::Graphics& g) override {
     g.setColour(EarColours::Label);
     g.setFont(EarFontsSingleton::instance().Description);
+    // Lines up with PointEncoderPointControlsRow's bottomRow (the slider
+    // row), which starts at the row's own left edge (x=0) - NOT with where
+    // the top row's Active/Name/Channel/Jump controls end. Previously this
+    // skipped left by the top row's width first, which put these labels
+    // over empty space to the right of the actual slider columns instead
+    // of above them.
     auto area = getLocalBounds();
-    area.removeFromLeft(PointEncoderPointControlsRow::kActiveWidth + 4 +
-                        PointEncoderPointControlsRow::kNameWidth + 8 +
-                        PointEncoderPointControlsRow::kChannelWidth + 4 +
-                        PointEncoderPointControlsRow::kJumpWidth + 8 +
-                        PointEncoderPointControlsRow::kEarChannelWidth + 4 +
-                        PointEncoderPointControlsRow::kJumpWidth);
     for (auto const& title :
         {"Az", "El", "Dist", "Gain", "W", "H", "D", "Diff"}) {
       g.drawText(title,
@@ -98,6 +99,71 @@ PointEncoderAudioProcessorEditor::PointEncoderAudioProcessorEditor(
     layoutContent();
   };
   masterContent_.addAndMakeVisible(collapseAllButton_);
+
+  quickRoutingHeaderButton_.setButtonText(
+      quickRoutingExpanded_ ? "v Quick Scene routing" : "> Quick Scene routing");
+  quickRoutingHeaderButton_.onClick = [this] {
+    quickRoutingExpanded_ = !quickRoutingExpanded_;
+    quickRoutingHeaderButton_.setButtonText(
+        quickRoutingExpanded_ ? "v Quick Scene routing" : "> Quick Scene routing");
+    layoutContent();
+  };
+  masterContent_.addAndMakeVisible(quickRoutingHeaderButton_);
+
+  quickRoutingFromLabel_.setJustificationType(juce::Justification::centredRight);
+  masterContent_.addAndMakeVisible(quickRoutingFromLabel_);
+  quickRoutingFromField_.setInputRestrictions(2, "0123456789");
+  quickRoutingFromField_.setJustification(juce::Justification::centred);
+  quickRoutingFromField_.setText("1", juce::dontSendNotification);
+  quickRoutingFromField_.setTooltip(
+      "First point this assigns a Scene channel to (1-" +
+      juce::String(PointEncoderAudioProcessor::kMaxPoints) + ").");
+  masterContent_.addAndMakeVisible(quickRoutingFromField_);
+
+  quickRoutingCountLabel_.setJustificationType(juce::Justification::centredRight);
+  masterContent_.addAndMakeVisible(quickRoutingCountLabel_);
+  // Same channel-count convention REAPER's own track I/O picker uses -
+  // Mono/Stereo then even counts - capped at kMaxPoints since there's no
+  // point offering a range wider than this plugin actually has.
+  quickRoutingCountCombo_.addItem("Mono", 1);
+  quickRoutingCountCombo_.addItem("Stereo", 2);
+  for (int n = 4; n <= PointEncoderAudioProcessor::kMaxPoints; n += 2)
+    quickRoutingCountCombo_.addItem(juce::String(n), n);
+  quickRoutingCountCombo_.setSelectedId(2, juce::dontSendNotification);
+  masterContent_.addAndMakeVisible(quickRoutingCountCombo_);
+
+  quickRoutingStartChLabel_.setJustificationType(juce::Justification::centredRight);
+  masterContent_.addAndMakeVisible(quickRoutingStartChLabel_);
+  quickRoutingStartChField_.setInputRestrictions(3, "0123456789");
+  quickRoutingStartChField_.setJustification(juce::Justification::centred);
+  quickRoutingStartChField_.setText("1", juce::dontSendNotification);
+  quickRoutingStartChField_.setTooltip(
+      "Scene channel the first of those points is assigned to; the rest "
+      "follow sequentially.");
+  masterContent_.addAndMakeVisible(quickRoutingStartChField_);
+
+  quickRoutingAssignButton_.setTooltip(
+      "Assign Scene channels Start ch..Start ch+Channels-1 to points "
+      "From point..From point+Channels-1, in order. Every other point's "
+      "routing is left untouched.");
+  quickRoutingAssignButton_.onClick = [this] {
+    int fromPoint = quickRoutingFromField_.getText().getIntValue();
+    int count = quickRoutingCountCombo_.getSelectedId();
+    int startCh = quickRoutingStartChField_.getText().getIntValue();
+    if (fromPoint < 1 || fromPoint > PointEncoderAudioProcessor::kMaxPoints ||
+        count <= 0 || startCh < 1)
+      return;
+    for (int i = 0; i < count; ++i) {
+      int pointIdx = fromPoint - 1 + i;
+      if (pointIdx >= PointEncoderAudioProcessor::kMaxPoints) break;
+      int channel = startCh - 1 + i;
+      if (channel >= MAX_DAW_CHANNELS) break;
+      p_->setPointEarChannel(pointIdx, channel);
+    }
+    for (auto const& row : pointRows_) row->refreshFromProcessor();
+    if (sceneView_) sceneView_->refresh();
+  };
+  masterContent_.addAndMakeVisible(quickRoutingAssignButton_);
 
   pointsColumnHeader_ = std::make_unique<PointsColumnHeader>();
   masterContent_.addAndMakeVisible(*pointsColumnHeader_);
@@ -270,6 +336,31 @@ void PointEncoderAudioProcessorEditor::layoutContent() {
     row.removeFromRight(8);
     pointsHeading_.setBounds(row);
   }
+  quickRoutingHeaderButton_.setBounds(takeTop(kRowHeight).removeFromLeft(190));
+  if (quickRoutingExpanded_) {
+    auto row = takeTop(kRowHeight);
+    quickRoutingFromLabel_.setBounds(row.removeFromLeft(62));
+    row.removeFromLeft(4);
+    quickRoutingFromField_.setBounds(row.removeFromLeft(34));
+    row.removeFromLeft(14);
+    quickRoutingCountLabel_.setBounds(row.removeFromLeft(62));
+    row.removeFromLeft(4);
+    quickRoutingCountCombo_.setBounds(row.removeFromLeft(80));
+    row.removeFromLeft(14);
+    quickRoutingStartChLabel_.setBounds(row.removeFromLeft(56));
+    row.removeFromLeft(4);
+    quickRoutingStartChField_.setBounds(row.removeFromLeft(40));
+    row.removeFromLeft(14);
+    quickRoutingAssignButton_.setBounds(row.removeFromLeft(70));
+  }
+  quickRoutingFromLabel_.setVisible(quickRoutingExpanded_);
+  quickRoutingFromField_.setVisible(quickRoutingExpanded_);
+  quickRoutingCountLabel_.setVisible(quickRoutingExpanded_);
+  quickRoutingCountCombo_.setVisible(quickRoutingExpanded_);
+  quickRoutingStartChLabel_.setVisible(quickRoutingExpanded_);
+  quickRoutingStartChField_.setVisible(quickRoutingExpanded_);
+  quickRoutingAssignButton_.setVisible(quickRoutingExpanded_);
+  y += 6;
   pointsColumnHeader_->setVisible(allExpanded_);
   if (allExpanded_) pointsColumnHeader_->setBounds(takeTop(18));
   for (auto const& row : pointRows_) {

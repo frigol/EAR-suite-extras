@@ -48,6 +48,27 @@ class PointEncoderAudioProcessorEditor : public juce::AudioProcessorEditor {
   juce::Label pointsHeading_;
   juce::TextButton collapseAllButton_;
   bool allExpanded_{true};
+
+  // --- Quick Scene routing (collapsed by default, same pattern as the OSC
+  // sections below): assigns a contiguous range of Scene channels to a
+  // contiguous range of points in one go (REAPER's own "Mono/Stereo/4/6/
+  // 8/..." channel-count convention for the range length), rather than
+  // setting each point's "EAR ch" combo one at a time - useful with up to
+  // kMaxPoints points, most of which are often only a handful active at
+  // once. Unlike the algorithmic Reverb's own bulk-routing combo (which
+  // always covers all of its fixed 10 points), this can start from any
+  // point and cover just a subset, leaving every other point's routing
+  // untouched.
+  juce::TextButton quickRoutingHeaderButton_;
+  bool quickRoutingExpanded_{false};
+  juce::Label quickRoutingFromLabel_{{}, "From point"};
+  juce::TextEditor quickRoutingFromField_;
+  juce::Label quickRoutingCountLabel_{{}, "Channels"};
+  juce::ComboBox quickRoutingCountCombo_;
+  juce::Label quickRoutingStartChLabel_{{}, "Start ch"};
+  juce::TextEditor quickRoutingStartChField_;
+  juce::TextButton quickRoutingAssignButton_{"Assign"};
+
   std::unique_ptr<juce::Component> pointsColumnHeader_;
   std::array<std::unique_ptr<PointEncoderPointControlsRow>,
             PointEncoderAudioProcessor::kMaxPoints>
