@@ -151,9 +151,12 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
 
     // Each of the 3 signal paths that can reach the 9 outputs - direct
     // (dry, unprocessed), early reflections and diffuse tail - has its
-    // own enable switch and level. Direct defaults OFF: the dry object is
-    // already sent to Scene on its own channel, so direct here is only
-    // for auditioning/special routing, not the normal signal path.
+    // own enable switch and level. Direct is direction-weighted per point
+    // exactly like early reflections (see processBlock()'s directFeedBuffer_),
+    // so it follows each source's position instead of broadcasting
+    // identically to every point. Defaults OFF: the dry object is already
+    // sent to Scene on its own channel, so direct here is only for
+    // auditioning/special routing, not the normal signal path.
     bool directEnabled{false};
     float directLevel{1.0f};
     bool earlyEnabled{true};
@@ -417,10 +420,15 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
 
   // Reused per-block scratch buffers (sized in prepareToPlay, never
   // allocated on the audio thread): one direction-weighted early-feed
-  // buffer per point, plus the shared diffuse-send buffer.
+  // buffer per point, plus the shared diffuse-send buffer. directFeedBuffer_
+  // uses the exact same per-point direction weight as earlyFeedBuffer_
+  // (src.earlyWeight[p], not re-scaled by distance) so the optional Direct
+  // path follows each source's direction the same way the early
+  // reflections do, rather than being an unweighted mono sum broadcast
+  // identically to every point (which used to ignore direction entirely).
   std::array<std::vector<float>, kNumPoints> earlyFeedBuffer_;
+  std::array<std::vector<float>, kNumPoints> directFeedBuffer_;
   std::vector<float> diffuseFeedBuffer_;
-  std::vector<float> directMixBuffer_;  // sum of active inputs, for the Direct path
 
   ear::plugin::communication::MonitoringControlConnection
       sceneControlConnection_;

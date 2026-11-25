@@ -242,10 +242,11 @@ void ReverbAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     earlyReflections_[static_cast<size_t>(i)].prepare(sampleRate, i);
     earlyFeedBuffer_[static_cast<size_t>(i)].assign(
         static_cast<size_t>(samplesPerBlock), 0.0f);
+    directFeedBuffer_[static_cast<size_t>(i)].assign(
+        static_cast<size_t>(samplesPerBlock), 0.0f);
     earlyPreDelay_[static_cast<size_t>(i)].prepare(sampleRate, 200.0f);
   }
   diffuseFeedBuffer_.assign(static_cast<size_t>(samplesPerBlock), 0.0f);
-  directMixBuffer_.assign(static_cast<size_t>(samplesPerBlock), 0.0f);
   diffusePreDelay_.prepare(sampleRate, 200.0f);
 
   std::lock_guard<std::mutex> lock(diffuseNetworkMutex_);
@@ -332,26 +333,33 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
     }
   }
 
-  // Build each point's direction-weighted early-reflection feed, the one
-  // shared diffuse-tail feed, and the plain (unweighted) sum used by the
-  // optional Direct path, from the active sources' own channels.
-  for (int p = 0; p < kNumPoints; ++p)
+  // Build each point's direction-weighted early-reflection feed, its
+  // direction-weighted Direct feed (same per-point weight, so the optional
+  // Direct path follows each source's direction instead of broadcasting an
+  // unweighted mono sum identically to every point), and the one shared
+  // diffuse-tail feed, from the active sources' own channels.
+  for (int p = 0; p < kNumPoints; ++p) {
     std::fill(earlyFeedBuffer_[static_cast<size_t>(p)].begin(),
               earlyFeedBuffer_[static_cast<size_t>(p)].begin() + numSamples,
               0.0f);
+    std::fill(directFeedBuffer_[static_cast<size_t>(p)].begin(),
+              directFeedBuffer_[static_cast<size_t>(p)].begin() + numSamples,
+              0.0f);
+  }
   std::fill(diffuseFeedBuffer_.begin(), diffuseFeedBuffer_.begin() + numSamples,
-            0.0f);
-  std::fill(directMixBuffer_.begin(), directMixBuffer_.begin() + numSamples,
             0.0f);
 
   for (auto const& src : sources) {
     const float* in = buffer.getReadPointer(src.channel);
-    for (int n = 0; n < numSamples; ++n) {
+    for (int n = 0; n < numSamples; ++n)
       diffuseFeedBuffer_[static_cast<size_t>(n)] += src.diffuseSend * in[n];
-      directMixBuffer_[static_cast<size_t>(n)] += in[n];
-    }
     for (int p = 0; p < kNumPoints; ++p) {
-      float gain = src.earlyLevel * src.earlyWeight[p];
+      float w = src.earlyWeight[p];
+      if (w < 1.0e-5f) continue;
+      auto& directFeed = directFeedBuffer_[static_cast<size_t>(p)];
+      for (int n = 0; n < numSamples; ++n)
+        directFeed[static_cast<size_t>(n)] += w * in[n];
+      float gain = src.earlyLevel * w;
       if (gain < 1.0e-5f) continue;
       auto& feed = earlyFeedBuffer_[static_cast<size_t>(p)];
       for (int n = 0; n < numSamples; ++n) feed[static_cast<size_t>(n)] += gain * in[n];
@@ -409,12 +417,16 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
           out[n] += diffuseOutGain * diffuseVariation * tailEngine.getTap(p, n);
       }
 
-      // Direct: the unprocessed dry mix, off by default - the dry object
-      // is already sent to Scene on its own channel, so this exists for
-      // auditioning/special routing only (see DspParams::directEnabled).
+      // Direct: the unprocessed dry signal, direction-weighted the same
+      // way as the early reflections above (so it follows each source's
+      // position instead of being broadcast identically to every point) -
+      // off by default, since the dry object is already sent to Scene on
+      // its own channel; this exists for auditioning/special routing only
+      // (see DspParams::directEnabled).
       if (directEnabled) {
+        auto& directFeed = directFeedBuffer_[static_cast<size_t>(p)];
         for (int n = 0; n < numSamples; ++n)
-          out[n] += directOutGain * directMixBuffer_[static_cast<size_t>(n)];
+          out[n] += directOutGain * directFeed[static_cast<size_t>(n)];
       }
 
       // Safety net: a user reported sporadic massive level spikes
