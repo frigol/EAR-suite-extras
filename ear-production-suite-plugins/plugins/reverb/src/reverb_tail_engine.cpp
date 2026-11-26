@@ -19,13 +19,16 @@ void FdnTailEngine::prepare(double sampleRate) {
   fdn_.prepare(sampleRate);
   inputDiffuser_.prepare(sampleRate);
   lowpassState_ = 0.0f;
+  lowCutState_ = 0.0f;
   setBandwidth(1.0f);  // default: fully open, no extra darkening
+  setLowCut(20.0f);    // default: off, no extra low-end cut
 }
 
 void FdnTailEngine::reset() {
   fdn_.reset();
   inputDiffuser_.reset();
   lowpassState_ = 0.0f;
+  lowCutState_ = 0.0f;
 }
 
 void FdnTailEngine::setDecaySeconds(float rt60) { fdn_.setDecaySeconds(rt60); }
@@ -43,13 +46,27 @@ void FdnTailEngine::setBandwidth(float bandwidth01) {
                             static_cast<float>(sampleRate_ > 0 ? sampleRate_ : 48000.0));
 }
 
+void FdnTailEngine::setLowCut(float cutoffHz) {
+  cutoffHz = juce::jlimit(20.0f, 500.0f, cutoffHz);
+  // First-order (6dB/octave) highpass, derived from a one-pole lowpass
+  // (see process()): highpass(x) = x - lowpass(x). Same simple one-pole
+  // style as the rest of this engine's filtering (bandwidth, damping) -
+  // gentle on purpose, to thin out boom without a sharp resonant cut.
+  lowCutCoeff_ = std::exp(-2.0f * juce::MathConstants<float>::pi * cutoffHz /
+                          static_cast<float>(sampleRate_ > 0 ? sampleRate_ : 48000.0));
+}
+
 void FdnTailEngine::process(const float* monoInput, int numSamples) {
   diffusedInput_.resize(static_cast<size_t>(numSamples));
+  // Low cut first (remove boom before it ever reaches the network), then
   // "Bandwidth": a one-pole lowpass on the raw input, same stage MVerb
-  // has as BANDWIDTHFREQ - applied before pre-diffusion, so it shapes
-  // what actually reaches the FDN rather than just colouring the output.
+  // has as BANDWIDTHFREQ - both applied before pre-diffusion, so they
+  // shape what actually reaches the FDN rather than just colouring the
+  // output.
   for (int n = 0; n < numSamples; ++n) {
-    lowpassState_ = (1.0f - bandwidthCoeff_) * monoInput[n] + bandwidthCoeff_ * lowpassState_;
+    lowCutState_ = (1.0f - lowCutCoeff_) * monoInput[n] + lowCutCoeff_ * lowCutState_;
+    float highpassed = monoInput[n] - lowCutState_;
+    lowpassState_ = (1.0f - bandwidthCoeff_) * highpassed + bandwidthCoeff_ * lowpassState_;
     diffusedInput_[static_cast<size_t>(n)] = lowpassState_;
   }
   // Pre-diffuse before the FDN so the tail builds up as a smooth wash
@@ -75,6 +92,9 @@ MVerbTailEngine::MVerbTailEngine() : impl_(std::make_unique<Impl>()) {}
 MVerbTailEngine::~MVerbTailEngine() = default;
 
 void MVerbTailEngine::prepare(double sampleRate) {
+  sampleRate_ = sampleRate;
+  lowCutState_ = 0.0f;
+  setLowCut(20.0f);  // default: off, no extra low-end cut
   impl_->verb.setSampleRate(static_cast<float>(sampleRate));
   // MVerb has its own internal early-reflections/dry-mix stages, which we
   // don't want: this reverb already has its own direction-weighted early
@@ -91,7 +111,10 @@ void MVerbTailEngine::prepare(double sampleRate) {
   impl_->verb.setParameter(MVerb<float>::PREDELAY, 0.0f);
 }
 
-void MVerbTailEngine::reset() { impl_->verb.reset(); }
+void MVerbTailEngine::reset() {
+  impl_->verb.reset();
+  lowCutState_ = 0.0f;
+}
 
 void MVerbTailEngine::setDecaySeconds(float rt60) {
   // MVerb's own DECAY is a 0..1 feedback-amount knob, not a literal RT60
@@ -125,6 +148,15 @@ void MVerbTailEngine::setBandwidth(float bandwidth01) {
                            juce::jlimit(0.0f, 1.0f, bandwidth01));
 }
 
+void MVerbTailEngine::setLowCut(float cutoffHz) {
+  cutoffHz = juce::jlimit(20.0f, 500.0f, cutoffHz);
+  // MVerb has no native highpass, so this is our own first-order
+  // (6dB/octave) one-pole filter on its mono input (see process()) -
+  // same approach as the FDN's own setLowCut().
+  lowCutCoeff_ = std::exp(-2.0f * juce::MathConstants<float>::pi * cutoffHz /
+                          static_cast<float>(sampleRate_ > 0 ? sampleRate_ : 48000.0));
+}
+
 void MVerbTailEngine::process(const float* monoInput, int numSamples) {
   size_t n = static_cast<size_t>(numSamples);
   if (inLeft_.size() != n) {
@@ -133,8 +165,12 @@ void MVerbTailEngine::process(const float* monoInput, int numSamples) {
     outLeft_.resize(n);
     outRight_.resize(n);
   }
-  std::copy(monoInput, monoInput + numSamples, inLeft_.begin());
-  std::copy(monoInput, monoInput + numSamples, inRight_.begin());
+  for (int i = 0; i < numSamples; ++i) {
+    lowCutState_ = (1.0f - lowCutCoeff_) * monoInput[i] + lowCutCoeff_ * lowCutState_;
+    float highpassed = monoInput[i] - lowCutState_;
+    inLeft_[static_cast<size_t>(i)] = highpassed;
+    inRight_[static_cast<size_t>(i)] = highpassed;
+  }
 
   float* inputs[2] = {inLeft_.data(), inRight_.data()};
   float* outputs[2] = {outLeft_.data(), outRight_.data()};

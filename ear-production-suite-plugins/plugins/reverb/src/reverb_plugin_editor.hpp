@@ -127,6 +127,8 @@ class ReverbAudioProcessorEditor : public juce::AudioProcessorEditor {
   juce::Slider preDelaySlider_;
   juce::Label bandwidthLabel_{{}, "Bandwidth (0-1)"};
   juce::Slider bandwidthSlider_;
+  juce::Label lowCutLabel_{{}, "Low cut (Hz)"};
+  juce::Slider lowCutSlider_;
 
   juce::Label timeStructureHeading_;
   std::unique_ptr<ReverbTimeStructureView> timeStructureView_;

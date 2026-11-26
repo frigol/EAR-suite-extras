@@ -40,6 +40,12 @@ class TailEngine {
   // the UI control stays visible either way rather than appearing/
   // disappearing when the engine is switched.
   virtual void setBandwidth(float bandwidth01) = 0;
+  // One-pole highpass on the tail's input, independent of setBandwidth()'s
+  // lowpass: cuts low-frequency buildup in the feedback network (common
+  // in algorithmic reverbs, heard as a "boomy"/bass-heavy tail) without
+  // touching the tail's own high end. Cutoff in Hz, 20 (off, inaudible)
+  // to 500 (heaviest cut).
+  virtual void setLowCut(float cutoffHz) = 0;
 
   // Feeds this block's mono diffuse-send mix into the engine.
   virtual void process(const float* monoInput, int numSamples) = 0;
@@ -67,6 +73,7 @@ class FdnTailEngine : public TailEngine {
   // it's a perfectly ordinary thing to want on any reverb's input, not
   // something MVerb-specific, so it's real here too rather than a no-op.
   void setBandwidth(float bandwidth01) override;
+  void setLowCut(float cutoffHz) override;
   void process(const float* monoInput, int numSamples) override;
   float getTap(int pointIndex, int n) const override;
 
@@ -77,6 +84,8 @@ class FdnTailEngine : public TailEngine {
   double sampleRate_{48000.0};
   float bandwidthCoeff_{0.0f};  // one-pole lowpass coefficient, see setBandwidth()
   float lowpassState_{0.0f};
+  float lowCutCoeff_{0.0f};  // one-pole lowpass used to derive the highpass, see setLowCut()
+  float lowCutState_{0.0f};
 };
 
 /** @brief Wraps the vendored MVerb (see third_party/MVerb.h, Martin
@@ -98,6 +107,7 @@ class MVerbTailEngine : public TailEngine {
   void setRoomSize(float scale) override;
   void setDensity(float density01) override;
   void setBandwidth(float bandwidth01) override;
+  void setLowCut(float cutoffHz) override;
   void process(const float* monoInput, int numSamples) override;
   float getTap(int pointIndex, int n) const override;
 
@@ -105,6 +115,11 @@ class MVerbTailEngine : public TailEngine {
   struct Impl;
   std::unique_ptr<Impl> impl_;
   std::vector<float> inLeft_, inRight_, outLeft_, outRight_;
+  // MVerb has no native highpass stage, so low-cut is our own one-pole
+  // filter applied to the mono input before it ever reaches MVerb.
+  double sampleRate_{48000.0};
+  float lowCutCoeff_{0.0f};
+  float lowCutState_{0.0f};
 };
 
 }  // namespace reverbdsp

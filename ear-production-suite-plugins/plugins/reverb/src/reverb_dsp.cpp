@@ -37,6 +37,8 @@ float angularWeight(Direction const& a, Direction const& b, float sharpness) {
 }
 
 void EarlyReflections::prepare(double sampleRate, int instanceSeed) {
+  sampleRate_ = sampleRate;
+  setBandwidth(1.0f);  // default: fully open, no extra darkening
   taps_.clear();
   // A denser set of pseudo-random, decorrelated-per-instance early
   // reflections spread over roughly the first 55ms, decaying in level -
@@ -75,6 +77,15 @@ void EarlyReflections::reset() {
   lowpassState_ = 0.0f;
 }
 
+void EarlyReflections::setBandwidth(float bandwidth01) {
+  bandwidth01 = juce::jlimit(0.0f, 1.0f, bandwidth01);
+  // Same mapping as FdnTailEngine::setBandwidth(): 200Hz..Nyquist, squared
+  // so the control feels more even across its range.
+  float nyquist = static_cast<float>(sampleRate_ * 0.5);
+  float cutoffHz = 200.0f + bandwidth01 * bandwidth01 * juce::jmax(1.0f, nyquist - 200.0f);
+  lowpassCoeff_ = std::exp(-2.0f * kPi * cutoffHz / static_cast<float>(sampleRate_));
+}
+
 void EarlyReflections::process(const float* in, float* out, int numSamples) {
   if (buffer_.empty()) return;
   const int bufSize = static_cast<int>(buffer_.size());
@@ -90,8 +101,9 @@ void EarlyReflections::process(const float* in, float* out, int numSamples) {
 
     // Real reflections lose high-frequency energy off absorptive
     // surfaces - a one-pole lowpass on the summed taps reads as soft
-    // reflections rather than a stack of raw delayed copies.
-    lowpassState_ = 0.5f * sum + 0.5f * lowpassState_;
+    // reflections rather than a stack of raw delayed copies. Cutoff is
+    // set by setBandwidth(), the same brightness control as the tail.
+    lowpassState_ = (1.0f - lowpassCoeff_) * sum + lowpassCoeff_ * lowpassState_;
     out[n] += lowpassState_;
 
     writePos_ = (writePos_ + 1) % bufSize;
@@ -196,10 +208,41 @@ void FeedbackDelayNetwork::setDecaySeconds(float rt60) {
     feedbackGain_[static_cast<size_t>(l)] =
         std::pow(10.0f, -3.0f * delayTimeSeconds / rt60_);
   }
+  updateDampingCoeffs();  // depends on feedbackGain_/delayTimeSeconds too
 }
 
 void FeedbackDelayNetwork::setDamping(float damping01) {
   damping_ = juce::jlimit(0.0f, 0.95f, damping01);
+  updateDampingCoeffs();
+}
+
+void FeedbackDelayNetwork::updateDampingCoeffs() {
+  // damping_ used to be fed straight in as the in-loop one-pole's blend
+  // coefficient, applied once per round trip. That compounds: a line
+  // with a short delay (hence many round trips over the decay) darkens
+  // far more than one with a long delay at the exact same damping_
+  // value, and either way the result darkens much faster than the
+  // slider position suggests, since each trip's attenuation multiplies.
+  // Instead, damping_ now sets a target *high-frequency decay time*
+  // (hfRt60, a fraction of the main RT60 - 0 = no extra damping, i.e.
+  // highs decay at the same rate as everything else; 1 = highs decay 10x
+  // faster) and each line's coefficient is solved so it actually hits
+  // that target after its own, different round-trip time - the same
+  // normalization setDecaySeconds() already does for feedbackGain_, just
+  // for the frequency-dependent part too.
+  float hfRt60 = juce::jmax(0.05f, rt60_ / (1.0f + damping_ * 9.0f));
+  for (int l = 0; l < kNumLines; ++l) {
+    float delayTimeSeconds =
+        static_cast<float>(delayLength_[static_cast<size_t>(l)]) /
+        static_cast<float>(sampleRate_ > 0 ? sampleRate_ : 48000.0);
+    float g = feedbackGain_[static_cast<size_t>(l)];
+    float gHf = std::pow(10.0f, -3.0f * delayTimeSeconds / hfRt60);
+    // Standard Moorer/Schroeder damping-filter coefficient solved from
+    // the ratio of the two target gains.
+    float ratio = juce::jlimit(0.0001f, 1.0f, gHf / juce::jmax(1.0e-6f, g));
+    dampingCoeff_[static_cast<size_t>(l)] =
+        juce::jlimit(0.0f, 0.999f, (1.0f - ratio) / (1.0f + ratio));
+  }
 }
 
 void FeedbackDelayNetwork::setRoomSize(float scale) {
@@ -278,9 +321,12 @@ void FeedbackDelayNetwork::process(const float* input, int numSamples) {
       mixed *= feedbackGain_[static_cast<size_t>(l)];
 
       // One-pole lowpass in the feedback path approximates HF air
-      // absorption so the tail darkens as it decays.
+      // absorption so the tail darkens as it decays - coefficient is
+      // per-line and solved for a target HF decay time, see
+      // updateDampingCoeffs(), not used as a raw blend amount.
       float& damp = dampingState_[static_cast<size_t>(l)];
-      damp = (1.0f - damping_) * mixed + damping_ * damp;
+      float dCoeff = dampingCoeff_[static_cast<size_t>(l)];
+      damp = (1.0f - dCoeff) * mixed + dCoeff * damp;
 
       float inputToLine = input[n] * inputGain;
       auto& buf = delayBuffer_[static_cast<size_t>(l)];

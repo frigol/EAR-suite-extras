@@ -49,6 +49,16 @@ float earlyLevelForDistance(float distance) {
 float diffuseSendForDistance(float distance) {
   return 1.0f - std::exp(-juce::jmax(0.0f, distance) / 3.0f);
 }
+
+// Real air absorbs high frequencies over distance, on top of the level
+// drop above - a source a few metres away sounds not just quieter but
+// measurably darker, which this plugin didn't model at all (distance
+// only ever changed level, never tone). Near 20kHz (inaudible effect) at
+// distance 1, falling to a dark 500Hz floor for very distant sources.
+float airAbsorptionCutoffForDistance(float distance) {
+  float d = juce::jmax(0.0f, distance);
+  return juce::jmax(500.0f, 20000.0f / (1.0f + d));
+}
 }  // namespace
 
 ReverbAudioProcessor::ReverbAudioProcessor()
@@ -248,6 +258,8 @@ void ReverbAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
   }
   diffuseFeedBuffer_.assign(static_cast<size_t>(samplesPerBlock), 0.0f);
   diffusePreDelay_.prepare(sampleRate, 200.0f);
+  airAbsorptionScratch_.assign(static_cast<size_t>(samplesPerBlock), 0.0f);
+  airAbsorptionState_.fill(0.0f);
 
   std::lock_guard<std::mutex> lock(diffuseNetworkMutex_);
   for (auto* engine : {static_cast<reverbdsp::TailEngine*>(&fdnTailEngine_),
@@ -258,7 +270,9 @@ void ReverbAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     engine->setRoomSize(dspParams_.roomSize);
     engine->setDensity(dspParams_.density);
     engine->setBandwidth(dspParams_.bandwidth);
+    engine->setLowCut(dspParams_.lowCutHz);
   }
+  for (auto& er : earlyReflections_) er.setBandwidth(dspParams_.bandwidth);
   for (auto& line : earlyPreDelay_) line.setDelayMs(dspParams_.preDelayMs);
   diffusePreDelay_.setDelayMs(dspParams_.preDelayMs);
 }
@@ -302,6 +316,7 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
     float earlyWeight[kNumPoints];
     float earlyLevel;
     float diffuseSend;
+    float airCoeff;
   };
   std::vector<ActiveSource> sources;
   {
@@ -317,6 +332,9 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
           reverbdsp::Direction::fromAzEl(slot.azimuthDeg, slot.elevationDeg);
       src.earlyLevel = earlyLevelForDistance(slot.distance);
       src.diffuseSend = diffuseSendForDistance(slot.distance);
+      float airCutoffHz = airAbsorptionCutoffForDistance(slot.distance);
+      src.airCoeff = std::exp(-2.0f * juce::MathConstants<float>::pi *
+                              airCutoffHz / static_cast<float>(getSampleRate()));
 
       float sharpness = sharpnessForSize(slot.width, slot.height);
       float sum = 0.0f;
@@ -351,18 +369,30 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
 
   for (auto const& src : sources) {
     const float* in = buffer.getReadPointer(src.channel);
+
+    // Air absorption: farther sources lose high end before they reach
+    // any of the three feeds below, on top of the level-only distance
+    // scaling those already had (see airAbsorptionCutoffForDistance()).
+    // One-pole state is kept per physical channel across blocks.
+    float& airState = airAbsorptionState_[static_cast<size_t>(src.channel)];
+    for (int n = 0; n < numSamples; ++n) {
+      airState = (1.0f - src.airCoeff) * in[n] + src.airCoeff * airState;
+      airAbsorptionScratch_[static_cast<size_t>(n)] = airState;
+    }
+    const float* filtered = airAbsorptionScratch_.data();
+
     for (int n = 0; n < numSamples; ++n)
-      diffuseFeedBuffer_[static_cast<size_t>(n)] += src.diffuseSend * in[n];
+      diffuseFeedBuffer_[static_cast<size_t>(n)] += src.diffuseSend * filtered[n];
     for (int p = 0; p < kNumPoints; ++p) {
       float w = src.earlyWeight[p];
       if (w < 1.0e-5f) continue;
       auto& directFeed = directFeedBuffer_[static_cast<size_t>(p)];
       for (int n = 0; n < numSamples; ++n)
-        directFeed[static_cast<size_t>(n)] += w * in[n];
+        directFeed[static_cast<size_t>(n)] += w * filtered[n];
       float gain = src.earlyLevel * w;
       if (gain < 1.0e-5f) continue;
       auto& feed = earlyFeedBuffer_[static_cast<size_t>(p)];
-      for (int n = 0; n < numSamples; ++n) feed[static_cast<size_t>(n)] += gain * in[n];
+      for (int n = 0; n < numSamples; ++n) feed[static_cast<size_t>(n)] += gain * filtered[n];
     }
   }
 
@@ -397,6 +427,17 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
     // other stays prepared (see prepareToPlay()) but idle, so switching
     // is instant without either one's state going stale.
     tailEngine.process(diffuseFeedBuffer_.data(), numSamples);
+
+    // Set if the safety net below ever has to sanitize a non-finite
+    // sample: a NaN/Inf that reached the tail engine's feedback matrix or
+    // an early-reflection point's one-pole lowpass would otherwise keep
+    // circulating in that internal state forever (both are IIR/feedback
+    // elements), so the output clamp would mask it as permanent silence
+    // on every later block instead of ever letting the reverb recover.
+    // Resetting those elements' state once corruption is seen lets
+    // processing continue normally from the next block instead of
+    // staying silently stuck.
+    bool corruptionDetected = false;
 
     for (int p = 0; p < kNumPoints && p < buffer.getNumChannels(); ++p) {
       float* out = buffer.getWritePointer(p);
@@ -440,9 +481,17 @@ void ReverbAudioProcessor::processBlock(AudioBuffer<float>& buffer,
       // regardless of what caused it.
       for (int n = 0; n < numSamples; ++n) {
         float s = out[n];
-        if (!std::isfinite(s)) s = 0.0f;
+        if (!std::isfinite(s)) {
+          s = 0.0f;
+          corruptionDetected = true;
+        }
         out[n] = juce::jlimit(-4.0f, 4.0f, s);
       }
+    }
+
+    if (corruptionDetected) {
+      tailEngine.reset();
+      for (auto& er : earlyReflections_) er.reset();
     }
   }
   for (int outCh = kNumPoints; outCh < buffer.getNumChannels(); ++outCh) {
@@ -754,10 +803,30 @@ void ReverbAudioProcessor::setBandwidth(float bandwidth01) {
   dspParams_.bandwidth = juce::jlimit(0.0f, 1.0f, bandwidth01);
   fdnTailEngine_.setBandwidth(dspParams_.bandwidth);
   mverbTailEngine_.setBandwidth(dspParams_.bandwidth);
+  for (auto& er : earlyReflections_) er.setBandwidth(dspParams_.bandwidth);
+}
+
+void ReverbAudioProcessor::setLowCut(float cutoffHz) {
+  std::lock_guard<std::mutex> lock(diffuseNetworkMutex_);
+  dspParams_.lowCutHz = juce::jlimit(20.0f, 500.0f, cutoffHz);
+  fdnTailEngine_.setLowCut(dspParams_.lowCutHz);
+  mverbTailEngine_.setLowCut(dspParams_.lowCutHz);
 }
 
 void ReverbAudioProcessor::setTailEngine(reverbdsp::TailEngineType type) {
   std::lock_guard<std::mutex> lock(diffuseNetworkMutex_);
+  if (dspParams_.tailEngine != type) {
+    // The engine being switched to was left idle (not fed, not processed -
+    // see processBlock()'s comment on only running the selected engine)
+    // since the last time it was active, so its delay/feedback lines still
+    // hold whatever audio was in flight back then. Without this, switching
+    // back to it resumes that stale tail instead of starting clean, which
+    // is heard as old, already-decayed audio suddenly reappearing.
+    auto& newEngine = type == reverbdsp::TailEngineType::MVerbPlate
+                           ? static_cast<reverbdsp::TailEngine&>(mverbTailEngine_)
+                           : static_cast<reverbdsp::TailEngine&>(fdnTailEngine_);
+    newEngine.reset();
+  }
   dspParams_.tailEngine = type;
 }
 
@@ -771,6 +840,7 @@ void ReverbAudioProcessor::writeDspXml(juce::XmlElement& dspXml) const {
   dspXml.setAttribute("density", static_cast<double>(dsp.density));
   dspXml.setAttribute("pre_delay_ms", static_cast<double>(dsp.preDelayMs));
   dspXml.setAttribute("bandwidth", static_cast<double>(dsp.bandwidth));
+  dspXml.setAttribute("low_cut_hz", static_cast<double>(dsp.lowCutHz));
   dspXml.setAttribute("direct_enabled", dsp.directEnabled);
   dspXml.setAttribute("direct_level", static_cast<double>(dsp.directLevel));
   dspXml.setAttribute("early_enabled", dsp.earlyEnabled);
@@ -791,6 +861,7 @@ void ReverbAudioProcessor::applyDspXml(const juce::XmlElement& dspXml) {
   setPreDelayMs(
       static_cast<float>(dspXml.getDoubleAttribute("pre_delay_ms", 0.0)));
   setBandwidth(static_cast<float>(dspXml.getDoubleAttribute("bandwidth", 1.0)));
+  setLowCut(static_cast<float>(dspXml.getDoubleAttribute("low_cut_hz", 20.0)));
   setDirectEnabled(dspXml.getBoolAttribute("direct_enabled", false));
   setDirectLevel(
       static_cast<float>(dspXml.getDoubleAttribute("direct_level", 1.0)));

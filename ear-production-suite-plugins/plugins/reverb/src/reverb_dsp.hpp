@@ -35,6 +35,12 @@ class EarlyReflections {
  public:
   void prepare(double sampleRate, int instanceSeed);
   void reset();
+  // Same brightness control as the tail engines' own setBandwidth() (see
+  // reverb_tail_engine.hpp): 0 = dark/muffled, 1 = full bandwidth. Without
+  // this, the taps' softening lowpass below was a fixed ~5kHz cutoff no
+  // matter what - early reflections always sounded dark regardless of any
+  // control, including distance (which only changes level, never tone).
+  void setBandwidth(float bandwidth01);
   // Adds this block's early-reflection output into `out` (out[n] += ...).
   void process(const float* in, float* out, int numSamples);
 
@@ -47,6 +53,8 @@ class EarlyReflections {
   std::vector<float> buffer_;
   int writePos_ = 0;
   float lowpassState_ = 0.0f;
+  double sampleRate_ = 48000.0;
+  float lowpassCoeff_ = 0.0f;
 };
 
 /** @brief A short chain of Schroeder allpass filters: smears a signal in
@@ -110,12 +118,23 @@ class FeedbackDelayNetwork {
   float getTapSample(int line, int n) const;
 
  private:
+  void updateDampingCoeffs();
+
   std::array<std::vector<float>, kNumLines> delayBuffer_;
   std::array<int, kNumLines> baseDelayLength_{};
   std::array<int, kNumLines> delayLength_{};
   std::array<int, kNumLines> writePos_{};
   std::array<float, kNumLines> feedbackGain_{};
   std::array<float, kNumLines> dampingState_{};
+  // Per-line one-pole coefficient for the in-loop HF damping filter (see
+  // updateDampingCoeffs() in reverb_dsp.cpp) - derived from a target HF
+  // decay time, like feedbackGain_ is derived from rt60_, rather than
+  // used as a raw blend amount. Without this, the same fixed blend
+  // coefficient applied once per round trip compounds very differently
+  // depending on each line's round-trip time (itself set by roomSize),
+  // making a given Damping value darken the tail far more than its
+  // number suggests, especially over a long decay.
+  std::array<float, kNumLines> dampingCoeff_{};
   std::array<std::vector<float>, kNumLines> blockOutput_;
   // Per-line delay-time modulation (depth in samples, phase, rate), so
   // the feedback loop never settles into a fixed, ringing comb pattern.

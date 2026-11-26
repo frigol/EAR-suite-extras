@@ -334,6 +334,14 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
   bandwidthSlider_.onValueChange = [this] {
     p_->setBandwidth(static_cast<float>(bandwidthSlider_.getValue()));
   };
+  setupDspSlider(lowCutSlider_, 20.0, 500.0, 1.0, dsp.lowCutHz);
+  lowCutSlider_.setDoubleClickReturnValue(true, 20.0);
+  lowCutSlider_.setTooltip(
+      "Highpass cutoff on the tail's input, independent of Bandwidth: cuts "
+      "low-frequency buildup/boom. 20Hz = effectively off. Double-click to reset.");
+  lowCutSlider_.onValueChange = [this] {
+    p_->setLowCut(static_cast<float>(lowCutSlider_.getValue()));
+  };
 
   timeStructureHeading_.setText("Time structure (pre-delay / early / diffuse tail)",
                                 juce::dontSendNotification);
@@ -342,12 +350,14 @@ ReverbAudioProcessorEditor::ReverbAudioProcessorEditor(ReverbAudioProcessor* p)
   masterContent_.addAndMakeVisible(*timeStructureView_);
 
   for (auto* label : {&decayLabel_, &dampingLabel_, &roomSizeLabel_,
-                      &densityLabel_, &preDelayLabel_, &bandwidthLabel_}) {
+                      &densityLabel_, &preDelayLabel_, &bandwidthLabel_,
+                      &lowCutLabel_}) {
     label->setJustificationType(juce::Justification::centred);
     masterContent_.addAndMakeVisible(*label);
   }
   for (auto* slider : {&decaySlider_, &dampingSlider_, &roomSizeSlider_,
-                       &densitySlider_, &preDelaySlider_, &bandwidthSlider_})
+                       &densitySlider_, &preDelaySlider_, &bandwidthSlider_,
+                       &lowCutSlider_})
     masterContent_.addAndMakeVisible(*slider);
 
   pointsHeading_.setText(
@@ -596,6 +606,7 @@ void ReverbAudioProcessorEditor::refreshDspControlsFromProcessor() {
   densitySlider_.setValue(dsp.density, juce::dontSendNotification);
   preDelaySlider_.setValue(dsp.preDelayMs, juce::dontSendNotification);
   bandwidthSlider_.setValue(dsp.bandwidth, juce::dontSendNotification);
+  lowCutSlider_.setValue(dsp.lowCutHz, juce::dontSendNotification);
   directEnabledToggle_.setToggleState(dsp.directEnabled,
                                       juce::dontSendNotification);
   directLevelSlider_.setValue(dsp.directLevel, juce::dontSendNotification);
@@ -768,7 +779,8 @@ void ReverbAudioProcessorEditor::layoutContent() {
                 {{&densityLabel_, &densitySlider_},
                  {&preDelayLabel_, &preDelaySlider_}});
     layoutDspRow(decayArea.removeFromTop(kDspSubRowHeight),
-                {{&bandwidthLabel_, &bandwidthSlider_}});
+                {{&bandwidthLabel_, &bandwidthSlider_},
+                 {&lowCutLabel_, &lowCutSlider_}});
 
     y = topY + kSubPanelHeight;
   }

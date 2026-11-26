@@ -148,6 +148,11 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
     // Input brightness into the tail, 0 = dark/muffled, 1 = full
     // bandwidth - real on both tail engines (see reverb_tail_engine.hpp).
     float bandwidth{1.0f};
+    // Highpass cutoff (Hz) on the tail's input, independent of
+    // bandwidth's lowpass: 20 = off (inaudible), up to 500 = heaviest
+    // cut. Tames low-frequency buildup/boom in the feedback network -
+    // real on both tail engines.
+    float lowCutHz{20.0f};
 
     // Each of the 3 signal paths that can reach the 9 outputs - direct
     // (dry, unprocessed), early reflections and diffuse tail - has its
@@ -311,6 +316,7 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
   void setDensity(float density01);
   void setPreDelayMs(float ms);
   void setBandwidth(float bandwidth01);
+  void setLowCut(float cutoffHz);
   void setDirectEnabled(bool enabled);
   void setDirectLevel(float level);
   void setEarlyEnabled(bool enabled);
@@ -398,6 +404,16 @@ class ReverbAudioProcessor : public juce::AudioProcessor,
 
   std::array<InputSlotInfo, kMaxInputs> inputSlots_;
   mutable std::mutex inputSlotsMutex_;
+
+  // Air-absorption lowpass per input channel (one-pole, see
+  // airAbsorptionCutoffForDistance() in reverb_plugin_processor.cpp):
+  // farther sources lose high end before they ever reach the early/
+  // diffuse/direct feeds, same physical cause - and same per-channel
+  // state - as the level-only distance scaling those feeds already had.
+  // Indexed by channel like inputSlots_, read/written only from the
+  // audio thread in processBlock(), so no mutex needed.
+  std::array<float, kMaxInputs> airAbsorptionState_{};
+  std::vector<float> airAbsorptionScratch_;
 
   // One early-reflection generator per output point, each fed a different
   // direction-weighted mix of the active inputs (see processBlock()), plus
